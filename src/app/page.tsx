@@ -38,7 +38,7 @@ const toArabic = (s: string) =>
     })
     .join('');
 
-// splitlines แบบรักษา newline
+// splitlines แบบรักษา newline + ทำความสะอาดเบื้องต้น
 const splitlines = (s: string) =>
   toArabic(s)
     .replace(/\u200b/g, '')
@@ -118,17 +118,12 @@ const PIECE_MAP_HSR: Record<string, HsrSlot> = {
 
 /* ============ normalize ไทย→อังกฤษ แบบฟัซซี่ ============ */
 function normalizeStatWords(line: string): string {
-  // สร้าง regex ที่ยอมรับช่องว่างแทรกระหว่างอักษรไทย
-  const fuzzy = (s: string) =>
-    s.split('').map((ch) => (/\s/.test(ch) ? ch : `${ch}\\s*`)).join('');
-
+  const fuzzy = (s: string) => s.split('').map((ch) => (/\s/.test(ch) ? ch : `${ch}\\s*`)).join('');
   let s = toArabic(line);
-
   for (const [th, en] of Object.entries(STAT_MAP)) {
     const re = new RegExp(fuzzy(th), 'gi');
     if (re.test(s)) s = s.replace(re, en);
   }
-
   s = s
     .replace(/[·•●○・]/g, '•')
     .replace(/\u200b/g, '')
@@ -137,7 +132,6 @@ function normalizeStatWords(line: string): string {
     .replace(/[’‘]/g, "'")
     .replace(/\s{2,}/g, ' ')
     .trim();
-
   return s;
 }
 const normalizeLinesToEN = (lines: string[]) => lines.map((l) => normalizeStatWords(l));
@@ -168,6 +162,68 @@ async function nlu(text: string): Promise<NluResp> {
 
 /* ====================== OCR: Slip ====================== */
 
+// --- helpers for slip amount extraction ---
+const AMT_KEY_POS = [
+  'ยอดชำระ',
+  'ยอดสุทธิ',
+  'ยอดรวม',
+  'รวมทั้งสิ้น',
+  'สุทธิ',
+  'จำนวนเงิน',
+  'จำนวน',
+  'รวม',
+  'total',
+  'amount',
+  'paid',
+  'payment',
+];
+const CURRENCY_HINT = ['บาท', 'บาทถ้วน', 'thb', '฿'];
+
+function cleanSlipText(s: string) {
+  return toArabic(s || '')
+    .replace(/\u200b/g, '')
+    .replace(/[“”]/g, '"')
+    .replace(/[’‘]/g, "'")
+    .replace(/，/g, ',')
+    .replace(/[|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseAmountCandidates(lines: string[]) {
+  const NUM =
+    /(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/g;
+
+  type Cand = { value: number; raw: string; line: string; score: number };
+  const out: Cand[] = [];
+
+  const hasAny = (hay: string, arr: string[]) => arr.some((k) => new RegExp(`\\b${k}\\b`, 'i').test(hay));
+
+  for (const line0 of lines) {
+    const line = line0.toLowerCase();
+    let m: RegExpExecArray | null;
+    while ((m = NUM.exec(line0))) {
+      const raw = m[1];
+      const v = parseFloat(raw.replace(/[, ]/g, ''));
+      if (!isFinite(v)) continue;
+
+      let score = 0;
+      if (hasAny(line, AMT_KEY_POS)) score += 6;
+      if (hasAny(line, CURRENCY_HINT)) score += 4;
+      if (/\bfee|ค่าธรรมเนียม|charge/i.test(line)) score -= 5;
+      if (/\btime|เวลา|วันที่|reference|ref\.?|เลขที่|เบอร์|บัญชี/i.test(line)) score -= 4;
+
+      if (/\.\d{2}\b/.test(raw)) score += 2;
+      if (/[,\s]\d{3}/.test(raw)) score += 1;
+
+      out.push({ value: v, raw, line: line0, score });
+    }
+  }
+
+  out.sort((a, b) => (b.score !== a.score ? b.score - a.score : b.value - a.value));
+  return out;
+}
+
 async function ocrSlipAmount(file: File): Promise<number | null> {
   const {
     data: { text },
@@ -176,10 +232,22 @@ async function ocrSlipAmount(file: File): Promise<number | null> {
     corePath: '/tesseract/tesseract-core-simd-lstm.wasm.js',
     langPath: '/tesseract/lang',
   } as any);
-  const clean = toArabic(text || '').replace(/[ \t\f\v]+/g, ' ').trim();
-  let m = clean.match(/จำนวน\s*:?\s*([\d,]+(?:[.,]\d{2})?)\s*บาท?/i);
-  if (!m) m = clean.match(/([\d,]+(?:[.,]\d{2})?)\s*บาท?/i);
-  return m ? parseFloat(m[1].replace(/,/g, '').replace(/[^\d.]/g, '')) : null;
+
+  const clean = cleanSlipText(text);
+  const lines = clean.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  const cands = parseAmountCandidates(lines);
+
+  if (cands.length > 0) {
+    const best = cands.find((c) => c.value >= 5) || cands[0];
+    return best.value;
+  }
+
+  const fallback =
+    /(ยอดชำระ|ยอดรวม|รวมทั้งสิ้น|สุทธิ|จำนวนเงิน|total|amount)[^0-9]{0,12}(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/i;
+  const mm = clean.match(fallback);
+  if (mm) return parseFloat(mm[2].replace(/[, ]/g, ''));
+
+  return null;
 }
 
 function getExpectedAmountFromMessages(msgs: any[]): number | null {
@@ -215,7 +283,6 @@ function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
   for (const [k, v] of Object.entries(PIECE_MAP_GI)) {
     if (joined.includes(k.toLowerCase())) return v;
   }
-  // fallback จากค่าคงที่ยอดนิยม
   if (/(^|\s)4780(\s|$)/.test(joined)) return 'Flower';
   if (/(^|\s)311(\s|$)/.test(joined)) return 'Plume';
   return null;
@@ -256,7 +323,6 @@ const MAIN_NAMES = [
   'Energy Regeneration Rate',
 ];
 
-// ยืดหยุ่นขึ้น: อนุญาตโคลอน/ช่องว่างก่อนตัวเลข และช่องว่างในตัวเลข %
 const MAIN_RE = new RegExp(
   `\\b(${MAIN_NAMES.map((n) => n.replace(/ /g, '\\s+')).join('|')})\\b\\s*:?\\s*([0-9][\\d,.]*\\s*%?)`,
   'i'
@@ -267,7 +333,6 @@ function extractMainStatSmart(
   piece: GiSlot | HsrSlot | null,
   game: GameKey
 ): Stat | null {
-  // normalize ไทย→อังกฤษ อีกรอบ
   const linesEN = linesENIn.map((x) => normalizeStatWords(x));
 
   const headLines: string[] = [];
@@ -293,22 +358,18 @@ function extractMainStatSmart(
   collect(headJoined);
   for (const ln of headLines) collect(ln);
 
-  // กรองความไม่สมเหตุผลจาก OCR
   const isPct = (v: string) => /%$/.test(v);
   const isTinyInt = (v: string) => !isPct(v) && /^\d+(\.\d+)?$/.test(v) && parseFloat(v) <= 60;
 
   const filtered = candidates.filter((c) => {
-    // GI: Goblet ไม่รับ HP/ATK/DEF แบบ Flat (ยกเว้น EM)
     if (game === 'gi' && piece === 'Goblet') {
       if (/(hp|atk|def)/i.test(c.name) && !isPct(c.value)) return false;
     }
-    // GI: Circlet ส่วนใหญ่เป็น % หรือ EM
     if (game === 'gi' && piece === 'Circlet') {
       if (!isPct(c.value) && !/Elemental Mastery/i.test(c.name)) {
         if (isTinyInt(c.value)) return false;
       }
     }
-    // GI: Sands ส่วนใหญ่เป็น % หรือ EM
     if (game === 'gi' && piece === 'Sands') {
       if (!isPct(c.value) && !/Elemental Mastery/i.test(c.name)) {
         if (isTinyInt(c.value)) return false;
@@ -317,7 +378,6 @@ function extractMainStatSmart(
     return true;
   });
 
-  // Fallback เฉพาะ GI: Flower/Plume ค่าตายตัว
   if (game === 'gi' && filtered.length === 0 && (piece === 'Flower' || piece === 'Plume')) {
     if (piece === 'Flower') return { name: 'HP', value: '4780' };
     if (piece === 'Plume') return { name: 'ATK', value: '311' };
@@ -327,7 +387,7 @@ function extractMainStatSmart(
 
   const score = (s: Stat) => {
     const v = parseFloat(s.value.replace('%', ''));
-    const pct = isPct(s.value) ? 100 : 0;
+    const pct = /%$/.test(s.value) ? 100 : 0;
     const important = /(DMG Bonus|CRIT|Recharge|Mastery|Effect|Break|SPD|Healing)/i.test(s.name) ? 5 : 0;
     return pct + important + (isNaN(v) ? 0 : v / 100);
   };
@@ -374,7 +434,6 @@ function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[
     }
   };
 
-  // เดินทุกบรรทัดก่อนถึง set-bonus (มีหรือไม่มี bullet ก็อ่าน)
   for (const ln of linesEN) {
     if (stopRe.test(ln)) break;
     if (!ln) continue;
@@ -447,26 +506,113 @@ async function ocrGear(file: File, game: GameKey) {
   return game === 'gi' ? parseGI(text) : parseHSR(text);
 }
 
-/* ====================== UI helpers ====================== */
+/* ====================== UI: Liquid/Glass ====================== */
 
-function BotText({ text }: { text: string }) {
-  const ls = text.split(/\r?\n/);
+const glassIndigo =
+  'bg-indigo-500/25 hover:bg-indigo-500/35 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(49,46,129,.35)] transition active:scale-[.98],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
+const glassGreen =
+  'bg-emerald-500/25 hover:bg-emerald-500/35 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(5,150,105,.35)],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
+const glassRed =
+  'bg-rose-500/30 hover:bg-rose-500/40 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(225,29,72,.35)],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
+const glassGray =
+  'bg-white/10 hover:bg-white/15 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(0,0,0,.25)],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
+const bubbleUser =
+  'bg-indigo-400/18 text-white backdrop-blur-md ring-3 ring-white/10 rounded-2xl ' +
+  'shadow-[inset_0_1px_0_rgba(255,255,255,.28),0_8px_22px_rgba(49,46,129,.28)] ' +
+  'before:absolute before:-top-0.5 before:left-3 before:right-3 before:h-[2px] before:rounded-full before:bg-white/50 before:opacity-50 before:blur-[1px] ' +
+  'relative';
+
+function GlassPill({
+  children,
+  className = '',
+  color = 'indigo',
+  onClick,
+  disabled = false,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  color?: 'indigo' | 'green' | 'red' | 'gray';
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
+  const c =
+    color === 'green' ? glassGreen : color === 'red' ? glassRed : color === 'gray' ? glassGray : glassIndigo;
   return (
-    <div className="bg-gray-700 p-3 rounded-xl inline-block whitespace-pre-wrap break-words">
-      <div className="flex items-baseline space-x-1 mb-1">
-        <span className="text-pink-300">Ruby</span>
-        <span className="text-gray-400">:</span>
-        <span className="text-white">{ls[0]}</span>
-      </div>
-      <div className="mt-1">
-        {ls.slice(1).map((line, i) => (
-          <div key={i} className="text-white">
-            {line}
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`px-4 py-2 rounded-full font-medium ${c} ${disabled ? 'opacity-60 cursor-not-allowed' : ''} ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** บับเบิลข้อความแบบ glass ของ Ruby (ไม่ลอย/ไม่ซ้ำ Ruby:) */
+function BotText({ text }: { text: string }) {
+  const tidy = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
+  const lines = (text || '').split(/\r?\n/).map(tidy);
+
+  return (
+    <div className="inline-block max-w-[44rem]">
+      <div
+        className={[
+          'relative px-4 py-2 rounded-2xl  text-[0.98rem] leading-relaxed whitespace-pre-wrap break-words',
+          'bg-white/8 backdrop-blur-md ring-3 ring-white/15',
+          'shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_28px_rgba(0,0,0,.35)]',
+          'before:absolute before:-top-0.5 before:left-3 before:right-3 before:h-[2px] before:rounded-full before:bg-white/60 before:opacity-70 before:blur-[1px]',
+        ].join(' ')}
+      >
+        <div className="mb-1 flex items-baseline gap-1">
+          <span className="text-pink-300 font-semibold">Ruby</span>
+          <span className="text-gray-300">:</span>
+          <span className="text-gray-100">{lines[0]}</span>
+        </div>
+        {lines.length > 1 && (
+          <div className="space-y-1 text-gray-100">
+            {lines.slice(1).map((ln, i) => (
+              <div key={i}>{ln}</div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
+}
+
+/* ====================== Menu extraction (แก้ปัญหาต้องกดซ้ำ) ====================== */
+
+/** ตัดราคาที่ท้ายข้อความ เช่น " - 179.00 บาท" และ " - 1,100.00 บาท" */
+function stripPriceSuffix(s: string) {
+  return s.replace(/\s*-\s*[\d,]+(?:\.\d{2})?\s*(?:บาท|฿|THB)?\s*$/i, '').trim();
+}
+
+/** แยกเมนูแบบมีเลขนำหน้าให้ได้ mapping 1..N -> label ที่อ่านรู้เรื่อง */
+function buildMenuMap(reply: string): Record<number, string> {
+  const lines = reply.split(/\r?\n/);
+  let cur: number | null = null;
+  const acc: Record<number, string[]> = {};
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    const m = line.match(/^(\d+)[.)]\s*(.*)$/);
+    if (m) {
+      cur = parseInt(m[1], 10);
+      acc[cur] = [m[2].trim()];
+      continue;
+    }
+    if (cur != null) {
+      if (line) acc[cur].push(line);
+    }
+  }
+
+  const out: Record<number, string> = {};
+  for (const k of Object.keys(acc)) {
+    const idx = parseInt(k, 10);
+    const joined = acc[idx].join(' ').replace(/\s{2,}/g, ' ').trim();
+    out[idx] = stripPriceSuffix(joined);
+  }
+  return out;
 }
 
 /* ====================== Page Component ====================== */
@@ -497,6 +643,13 @@ export default function Page() {
   );
   const [dynamicQR, setDynamicQR] = useState<string[]>([]);
   const [confirmMode, setConfirmMode] = useState(false);
+
+  // จดจำเมนู 1..N ที่เพิ่งโชว์ เพื่อ map เลข -> ข้อความ
+  const [pendingNumberRange, setPendingNumberRange] = useState<{ min: number; max: number; label: string } | null>(null);
+  const [menuMap, setMenuMap] = useState<Record<number, string>>({});
+
+  // จดจำ state รอ UID
+  const [awaitingUID, setAwaitingUID] = useState(false);
 
   /* ------------ payment ------------ */
   const [showPaidButton, setShowPaidButton] = useState(false);
@@ -541,29 +694,41 @@ export default function Page() {
 
   /* ------------ push helpers ------------ */
   const pushUser = (text: string) => setMessages((p) => [...p, { role: 'user', text }]);
+
   const pushBotMsg = (text: string, imageUrl?: string) =>
     setMessages((p) => [...p, { role: 'bot', text, imageUrl }]);
+
   const pushPreview = (text: string, url: string) =>
     setMessages((p) => [...p, { role: 'preview', text, imageUrl: url }]);
 
+  const isUnknownReply = (t?: string) =>
+    !!t && /ขอโทษค่ะ.*ไม่เข้าใจ|กรุณาระบุใหม่|i don't understand|unknown/i.test(t);
+
   const pushBot = (data: ApiResponse) => {
     if (!data.reply) return;
-    const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(data.reply);
+    const reply = data.reply || '';
+
+    const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
     const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
-    setMessages((p) => [...p, { role: 'bot', text: data.reply, imageUrl: enforcedQR }]);
+
+    setMessages((p) => [...p, { role: 'bot', text: reply, imageUrl: enforcedQR }]);
     setShowPaidButton(!!enforcedQR);
     if (enforcedQR) setPaidSoFar(0);
 
     // เมื่อ bot แนะนำ artifact/relic เสร็จ → เปิดโหมดคำนวณ
-    if (/(Artifact|Relic)\s+ที่เหมาะกับ/i.test(data.reply)) {
+    if (/(Artifact|Relic)\s+ที่เหมาะกับ/i.test(reply)) {
       setReadyCalc(arMode || null);
       setGearGi({});
       setGearHsr({});
       setDynamicQR(['คำนวณสเตตจากรูป', 'ดูเซ็ตตัวอื่น']);
       setConfirmMode(false);
+      setPendingNumberRange(null);
+      setMenuMap({});
+      setAwaitingUID(false);
       return;
     }
 
+    // quick replies จาก backend
     if (Array.isArray(data.quickReplies)) {
       setDynamicQR(data.quickReplies);
       setConfirmMode(
@@ -573,20 +738,113 @@ export default function Page() {
       setDynamicQR([]);
       setConfirmMode(false);
     }
+
+    // === ตรวจจับเมนูตัวเลข ===
+    let minSel = 1;
+    let maxSel = 0;
+    const rangeMatch = reply.match(/หมายเลข\s*(\d+)\s*-\s*(\d+)/i);
+    if (rangeMatch) {
+      minSel = parseInt(rangeMatch[1], 10);
+      maxSel = parseInt(rangeMatch[2], 10);
+    }
+    const menu = buildMenuMap(reply);
+    const keys = Object.keys(menu).map((k) => parseInt(k, 10)).filter((x) => !isNaN(x));
+    if (keys.length) {
+      if (!maxSel) {
+        maxSel = Math.max(...keys);
+        minSel = Math.min(...keys);
+      }
+      setMenuMap(menu);
+
+      const label = /\bแพ็กเกจ|package/i.test(reply) ? 'แพ็กเกจ' : 'ตัวเลือก';
+      setPendingNumberRange({ min: minSel, max: maxSel, label });
+
+      if (!Array.isArray(data.quickReplies) || data.quickReplies.length === 0) {
+        const buttons = [];
+        for (let i = minSel; i <= maxSel && buttons.length < 10; i++) buttons.push(String(i));
+        setDynamicQR(buttons);
+      }
+    } else {
+      setPendingNumberRange(null);
+      setMenuMap({});
+    }
+
+    // === ตรวจจับ state รอ UID ===
+    if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
+      setAwaitingUID(true);
+      // เมื่อขอ UID ไม่ควรมีเมนูตัวเลขค้างอยู่
+      setPendingNumberRange(null);
+      setMenuMap({});
+      setDynamicQR([]);
+      return;
+    }
+
+    // ถ้าไปสเตจสรุป/ยืนยัน/จ่ายเงินแล้ว ให้ถือว่าพ้น state รอ UID
+    if (/สรุปรายการ|กรุณากดยืนยัน|ยอดชำระ|รับคำยืนยันแล้ว/i.test(reply)) {
+      setAwaitingUID(false);
+    }
+  };
+
+  /* ------------ robust send chains ------------ */
+  const robustSendPackage = async (title: string, n: number | undefined, username?: string) => {
+    // primary = ชื่อแพ็กเกจ
+    let data = await callAPI(title, username);
+    if (!isUnknownReply(data.reply)) return data;
+
+    // fallback เลขล้วน
+    if (typeof n === 'number') {
+      data = await callAPI(String(n), username);
+      if (!isUnknownReply(data.reply)) return data;
+
+      // fallback คำกริยา
+      data = await callAPI(`เลือกแพ็กเกจ ${n}`, username);
+    }
+    return data;
+  };
+
+  const robustSendUID = async (uid: string, username?: string) => {
+    const tries = [uid, `UID: ${uid}`, `uid: ${uid}`, `UID ${uid}`, `uid ${uid}`];
+    let data: ApiResponse = {};
+    for (const t of tries) {
+      data = await callAPI(t, username);
+      if (!isUnknownReply(data.reply)) return data;
+    }
+    return data;
   };
 
   /* ------------ send ------------ */
   const handleSend = async () => {
     if (!input.trim()) return;
-    const msg = input.trim();
-    pushUser(msg);
+    const original = input.trim();
+    pushUser(original);
     setInput('');
     setDynamicQR([]);
-    if (!/^ยืนยัน$|^ยกเลิก$/i.test(msg)) setConfirmMode(false);
+    if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
+    // ถ้ากำลังรอ UID อยู่ ให้พยายามกรอก UID แบบ robust (แก้เคส "ไม่เข้าใจ")
+    if (awaitingUID && /^\d{6,12}$/.test(original)) {
+      const data = await robustSendUID(original, loggedInUser);
+      pushBot(data);
+      return;
+    }
+
+    // ถ้า user พิมพ์เป็นเลข และเรามีเมนู -> map เป็นข้อความ option ให้ backend เข้าใจง่ายขึ้น
+    if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
+      const n = parseInt(original, 10);
+      if (
+        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
+        menuMap[n]
+      ) {
+        const title = menuMap[n];
+        const data = await robustSendPackage(title, n, loggedInUser);
+        pushBot(data);
+        return;
+      }
+    }
+
     // ปุ่ม "ดูเซ็ตตัวอื่น"
-    if (/^ดูเซ็ตตัวอื่น$/i.test(msg)) {
+    if (/^ดูเซ็ตตัวอื่น$/i.test(original)) {
       if (!arMode) {
         pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~');
         return;
@@ -594,58 +852,55 @@ export default function Page() {
       setReadyCalc(null);
       setGearGi({});
       setGearHsr({});
-      const open = await callAPI(
-        arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail',
-        loggedInUser
-      );
+      const open = await callAPI(arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail', loggedInUser);
       pushBot(open);
       return;
     }
 
     // อยู่ในโหมดรอตัวละคร → ส่งตรงให้ /api
     if (arMode && !readyCalc) {
-      const data = await callAPI(msg, loggedInUser);
+      const data = await callAPI(original, loggedInUser);
       pushBot(data);
       return;
     }
 
-    // ใช้ NLU
-    const n = await nlu(msg);
-    if (n.intent === 'confirm') {
+    // ใช้ NLU (ยืนยัน/ยกเลิก/สลับโหมดเกม)
+    const nluRes = await nlu(original);
+    if (nluRes.intent === 'confirm') {
       const data = await callAPI('ยืนยัน', loggedInUser);
       pushBot(data);
       return;
     }
-    if (n.intent === 'cancel') {
+    if (nluRes.intent === 'cancel') {
       const data = await callAPI('ยกเลิก', loggedInUser);
       pushBot(data);
       return;
     }
-    if (n.intent === 'artifact_gi') {
+    if (nluRes.intent === 'artifact_gi') {
       setArMode('gi');
       setReadyCalc(null);
       const open = await callAPI('ดู artifact genshin impact', loggedInUser);
       pushBot(open);
-      if (n.character) {
-        const detail = await callAPI(n.character, loggedInUser);
+      if (nluRes.character) {
+        const detail = await callAPI(nluRes.character, loggedInUser);
         pushBot(detail);
       }
       return;
     }
-    if (n.intent === 'relic_hsr') {
+    if (nluRes.intent === 'relic_hsr') {
       setArMode('hsr');
       setReadyCalc(null);
       const open = await callAPI('ดู relic honkai star rail', loggedInUser);
       pushBot(open);
-      if (n.character) {
-        const detail = await callAPI(n.character, loggedInUser);
+      if (nluRes.character) {
+        const detail = await callAPI(nluRes.character, loggedInUser);
         pushBot(detail);
       }
       return;
     }
 
     // default
-    const data = await callAPI(msg, loggedInUser);
+    const data = await callAPI(original, loggedInUser);
     pushBot(data);
   };
 
@@ -671,6 +926,20 @@ export default function Page() {
       return;
     }
 
+    // ถ้าปุ่มเป็นเลขและเรามี mapping -> ส่งชื่อแพ็กเกจ
+    if (/^\d+$/.test(value) && (pendingNumberRange || Object.keys(menuMap).length)) {
+      const n = parseInt(value, 10);
+      if (
+        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
+        menuMap[n]
+      ) {
+        const title = menuMap[n];
+        const data = await robustSendPackage(title, n, loggedInUser);
+        pushBot(data);
+        return;
+      }
+    }
+
     const data = await callAPI(value, loggedInUser);
     pushBot(data);
 
@@ -690,7 +959,7 @@ export default function Page() {
   const handleUploadSlip = async (file: File) => {
     const expectedFull = getExpectedAmountFromMessages(messages);
     if (expectedFull == null) {
-      pushBotMsg('Ruby: ไม่พบยอดชำระล่าสุดในแชท กรุณาลองใหม่ค่ะ');
+      pushBotMsg('ไม่พบยอดชำระล่าสุดในแชท กรุณาลองใหม่ค่ะ');
       return;
     }
 
@@ -708,7 +977,7 @@ export default function Page() {
 
       const actual = await ocrSlipAmount(file);
       if (actual == null || Number.isNaN(actual)) {
-        pushBotMsg('Ruby: อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲 กรุณาอัปโหลดใหม่');
+        pushBotMsg('อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲 กรุณาอัปโหลดใหม่');
         return;
       }
 
@@ -746,10 +1015,10 @@ export default function Page() {
         setConfirmMode(false);
         setPaidSoFar(0);
       } else {
-        pushBotMsg('Ruby: อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲');
+        pushBotMsg('อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲');
       }
     } catch {
-      pushBotMsg('Ruby: เกิดข้อผิดพลาดระหว่างตรวจยอดจากสลิปค่ะ');
+      pushBotMsg('เกิดข้อผิดพลาดระหว่างตรวจยอดจากสลิปค่ะ');
     } finally {
       setVerifying(false);
     }
@@ -854,21 +1123,21 @@ export default function Page() {
 
   /* ------------ render ------------ */
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col md:flex-row p-4">
+    <div className="min-h-screen bg-[#0f1623] text-gray-100 flex flex-col md:flex-row p-4 gap-4">
       {/* Login */}
-      <div className="w-full md:w-1/4 bg-gray-800 rounded-xl shadow-lg p-6 mb-4 md:mb-0 md:mr-4">
+      <div className="w-full md:w-1/4 bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl ring-1 ring-white/10 p-6">
         {isLoggedIn ? (
           <>
             <div className="text-center mb-6">
               <p className="text-lg">บัญชีที่เข้าสู่ระบบ: {loggedInUser}</p>
             </div>
             <div className="flex justify-center">
-              <button
-                className="bg-gray-700 text-white px-4 py-2 rounded-xl hover:bg-gray-600 transition"
+              <GlassPill
+                color="indigo"
                 onClick={() => {
                   setIsLoggedIn(false);
                   setLoggedInUser('');
-                  setMessages([{ role: 'bot', text: 'Ruby: คุณได้ออกจากระบบแล้วค่ะ' }]);
+                  setMessages([{ role: 'bot', text: 'คุณได้ออกจากระบบแล้วค่ะ' }]);
                   setIsOpen(false);
                   setDynamicQR([]);
                   setConfirmMode(false);
@@ -878,10 +1147,14 @@ export default function Page() {
                   setReadyCalc(null);
                   setGearGi({});
                   setGearHsr({});
+                  setPendingNumberRange(null);
+                  setMenuMap({});
+                  setAwaitingUID(false);
                 }}
+                className="px-6"
               >
                 logout
-              </button>
+              </GlassPill>
             </div>
           </>
         ) : (
@@ -890,46 +1163,38 @@ export default function Page() {
               <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
             </div>
             <div className="mb-4">
-              <label className="block text-sm mb-2">Username:</label>
+              <label className="block text-sm mb-2 opacity-80">Username:</label>
               <input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full p-2 rounded-xl bg-gray-700 text-gray-100 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
                 placeholder="ใส่ username..."
               />
             </div>
-            <div className="mb-4">
-              <label className="block text-sm mb-2">Password:</label>
+            <div className="mb-6">
+              <label className="block text-sm mb-2 opacity-80">Password:</label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full p-2 rounded-xl bg-gray-700 text-gray-100 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
                 placeholder="ใส่ password..."
               />
             </div>
             <div className="flex justify-center">
-              <button
-                className="bg-gray-700 text-white px-4 py-2 rounded-xl hover:bg-gray-600 transition"
+              <GlassPill
+                color="indigo"
+                className="w-full justify-center"
                 onClick={async () => {
-                  const res = await fetch('/api', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password }),
-                  });
-                  const data = await res.json();
-                  if (data.success) {
-                    setIsLoggedIn(true);
-                    setLoggedInUser(username);
-                    setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
-                    setIsOpen(true);
-                  } else {
-                    setMessages([{ role: 'bot', text: 'Ruby: ' + (data.message || 'เข้าสู่ระบบไม่สำเร็จ') }]);
-                  }
+                  // (โปรดักชันสามารถเปลี่ยนกลับไปเรียก /api เพื่อ auth จริง)
+                  setIsLoggedIn(true);
+                  setLoggedInUser(username || 'user');
+                  setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
+                  setIsOpen(true);
                 }}
               >
                 login
-              </button>
+              </GlassPill>
             </div>
           </>
         )}
@@ -937,43 +1202,41 @@ export default function Page() {
 
       {/* Chat */}
       <div className="w-full md:w-3/4 flex flex-col">
-        <main className="p-6 mb-4">
-          <p>ยินดีต้อนรับสู่หน้าแชทบอท</p>
+        <main className="p-1 mb-2">
+          <p className="opacity-80">ยินดีต้อนรับสู่หน้าแชทบอท</p>
         </main>
 
         {isLoggedIn && isOpen && (
-          <div className="bg-gray-800 rounded-xl shadow-xl flex flex-col h-[80vh]">
-            <div className="flex justify-between items-center p-4 border-b border-gray-700 rounded-t-xl">
+          <div className="bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl ring-1 ring-white/10 flex flex-col h-[80vh]">
+            <div className="flex justify-between items-center p-4 border-b border-white/10 rounded-t-2xl">
               <span className="font-medium text-xl">แชทบอท</span>
-              <button className="text-gray-400 hover:text-gray-200" onClick={() => setIsOpen(false)}>
+              <button
+                className="rounded-full px-2 py-1 hover:bg-white/10"
+                onClick={() => setIsOpen(false)}
+                aria-label="close chat"
+              >
                 ✕
               </button>
             </div>
 
-            <div
-              ref={chatRef}
-              onScroll={handleScroll}
-              className="p-4 overflow-y-auto flex-1 text-lg text-gray-200 space-y-4"
-            >
+            <div ref={chatRef} onScroll={handleScroll} className="p-4 overflow-y-auto flex-1 text-lg space-y-4">
               {messages.map((msg, idx) => (
                 <div key={idx} className="space-y-2">
                   {msg.role === 'user' ? (
                     <div className="flex justify-end">
-                      <div className="bg-blue-600 text-white p-2 rounded-xl inline-block max-w-[85%]">
-                        {msg.text}
-                      </div>
+                      <div className={`p-2 rounded-2xl inline-block max-w-[85%] ${bubbleUser}`}>{msg.text}</div>
                     </div>
                   ) : msg.role === 'preview' ? (
                     <div className="flex justify-start">
-                      <div className="max-w-[85%] bg-gray-800/60 border border-gray-700 rounded-xl p-2">
-                        <p className="mb-2 text-sm text-gray-300">{msg.text || 'พรีวิว'}</p>
+                      <div className="max-w-[85%] bg-white/6 backdrop-blur-md ring-1 ring-white/10 rounded-2xl p-2 shadow">
+                        <p className="mb-2 text-sm text-gray-200/80">{msg.text || 'พรีวิว'}</p>
                         {msg.imageUrl && (
                           <Image
                             src={msg.imageUrl}
                             alt="Preview"
                             width={250}
                             height={339}
-                            className="rounded-lg border border-gray-600 object-contain"
+                            className="rounded-xl ring-1 ring-white/10 object-contain"
                           />
                         )}
                       </div>
@@ -988,7 +1251,7 @@ export default function Page() {
                             alt="QR"
                             width={250}
                             height={339}
-                            className="mt-2 rounded-xl border border-gray-600 max-w-full h-auto"
+                            className="mt-2 rounded-2xl ring-1 ring-white/10 max-w-full h-auto"
                           />
                         )}
                       </div>
@@ -1014,7 +1277,7 @@ export default function Page() {
                       return (
                         <div
                           key={slotName}
-                          className="bg-gray-800/60 border border-gray-700 rounded-lg p-2 flex flex-col items-center justify-center"
+                          className="bg-white/6 backdrop-blur-md ring-1 ring-white/10 rounded-xl p-2 flex flex-col items-center justify-center"
                         >
                           <span className="text-xs text-gray-300 mb-1">{slotName}</span>
                           {it?.url ? (
@@ -1023,10 +1286,10 @@ export default function Page() {
                               alt={slotName}
                               width={140}
                               height={180}
-                              className="rounded-md object-contain border border-gray-700"
+                              className="rounded-md object-contain ring-1 ring-white/10"
                             />
                           ) : (
-                            <div className="w-[140px] h-[180px] rounded-md border border-dashed border-gray-700 flex items-center justify-center text-xs text-gray-500">
+                            <div className="w-[140px] h-[180px] rounded-md border border-dashed border-white/15 flex items-center justify-center text-xs text-gray-400">
                               ยังไม่อัปโหลด
                             </div>
                           )}
@@ -1045,81 +1308,70 @@ export default function Page() {
             </div>
 
             {/* Bottom buttons */}
-            <div className="p-3 bg-gray-800 flex flex-wrap gap-3 rounded-b-xl">
+            <div className="p-3 bg-transparent flex flex-wrap gap-3 rounded-b-2xl border-t border-white/10">
               {showPaidButton ? (
-                <button
+                <GlassPill
                   onClick={fileSlipOnClick}
                   disabled={verifying}
-                  className={`px-4 py-2 rounded-full shadow-md text-sm font-medium transition-all duration-200 transform hover:scale-105 ${
-                    verifying ? 'bg-green-900 text-gray-300' : 'bg-green-600 hover:bg-green-700 text-white'
-                  }`}
+                  color="green"
+                  className="shadow-emerald-900/40"
                 >
                   {verifying ? 'กำลังตรวจสอบสลิป...' : 'อัปโหลดสลิป & ตรวจยอด'}
-                </button>
+                </GlassPill>
               ) : (
                 currentQR.map((value, index) => {
                   if (value === 'คำนวณสเตตจากรูป') {
                     const total = readyCalc === 'gi' ? 5 : 6;
                     const have = haveSlots.length;
                     return (
-                      <button
-                        key={`calc-${index}`}
-                        onClick={() => fileGearRef.current?.click()}
-                        className="px-4 py-2 rounded-full shadow-md text-sm font-medium bg-gradient-to-r from-purple-600 to-pink-600 text-white transform hover:scale-105"
-                      >
+                      <GlassPill key={`calc-${index}`} color="indigo" onClick={() => fileGearRef.current?.click()}>
                         อัปโหลดชิ้นจากรูป ({have}/{total})
-                      </button>
+                      </GlassPill>
                     );
                   }
                   const isConfirm = confirmMode && value.trim() === 'ยืนยัน';
                   const isCancel = confirmMode && value.trim() === 'ยกเลิก';
-                  const base =
-                    'px-4 py-2 rounded-full shadow-md transition-all duration-200 transform hover:scale-105 text-sm font-medium';
-                  const color = confirmMode
-                    ? isConfirm
-                      ? 'bg-green-600 hover:bg-green-700 text-white'
-                      : isCancel
-                      ? 'bg-red-600 hover:bg-red-700 text-white'
-                      : 'bg-gray-600 hover:bg-gray-700 text-white'
-                    : 'bg-gradient-to-r from-blue-600 to-purple-600 text-white';
-                  const label = dynamicQR.length ? value : defaults.find((d) => d.value === value)?.label || value;
+                  const color = confirmMode ? (isConfirm ? 'green' : isCancel ? 'red' : 'gray') : 'indigo';
+                  const label = /^\d+$/.test(value)
+                    ? value
+                    : dynamicQR.length
+                    ? value
+                    : defaults.find((d) => d.value === value)?.label || value;
                   return (
-                    <button key={`qr-${index}-${value}`} onClick={() => handleQuickReply(value)} className={`${base} ${color}`}>
+                    <GlassPill key={`qr-${index}-${value}`} color={color as any} onClick={() => handleQuickReply(value)}>
                       {label}
-                    </button>
+                    </GlassPill>
                   );
                 })
               )}
             </div>
 
             {/* input */}
-            <div className="p-2 flex items-center bg-gray-700 rounded-b-xl">
+            <div className="p-2 flex items-center gap-2 bg-transparent rounded-b-2xl">
               <input
                 type="text"
-                placeholder="พิมพ์สั้น ๆ ได้เลย เดี๋ยวนีโนะตีความให้เอง~"
+                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 835235056)' : 'พิมพ์เลขเลือกแพ็กเกจได้เลย (เช่น 2) หรือพิมพ์ข้อความ'}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                className="w-full rounded-xl p-2 text-black bg-gray-200 flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-full px-4 py-2 text-gray-100 bg-white/10 backdrop-blur-md ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               />
-              <button
-                onClick={handleSend}
-                className="bg-blue-600 text-white px-3 py-1 rounded-xl hover:bg-blue-700 ml-2 transition"
-              >
+              <GlassPill color="indigo" onClick={handleSend}>
                 →
-              </button>
+              </GlassPill>
             </div>
           </div>
         )}
 
-        {!isLoggedIn && <p className="text-center text-red-400">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>}
+        {!isLoggedIn && (
+          <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>
+        )}
         {!isOpen && isLoggedIn && (
-          <button
-            className="bg-gray-800 text-gray-100 px-4 py-2 rounded-xl shadow-xl hover:bg-gray-700 mx-auto block transition"
-            onClick={() => setIsOpen(true)}
-          >
-            💬 แชทกับเรา
-          </button>
+          <div className="mx-auto mt-2">
+            <GlassPill color="indigo" onClick={() => setIsOpen(true)}>
+              💬 แชทกับเรา
+            </GlassPill>
+          </div>
         )}
       </div>
 
