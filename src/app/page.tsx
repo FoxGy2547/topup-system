@@ -4,9 +4,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import Tesseract from 'tesseract.js';
-import Link from 'next/link';
 
-// ✅ ใช้ OCR เกียร์จาก lib ใหม่ (แทน parser เดิมทั้งหมด)
+// OCR เกียร์ (ถ้าใช้ฟีเจอร์นี้อยู่)
 import { ocrGear, GearItem, GiSlot, HsrSlot, GameKey } from '@/lib/gear-ocr';
 
 /* ====================== Types ====================== */
@@ -103,7 +102,8 @@ function cleanSlipText(s: string) {
 }
 
 function parseAmountCandidates(lines: string[]) {
-  const NUM = /(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/g;
+  const NUM =
+    /(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/g;
 
   type Cand = { value: number; raw: string; line: string; score: number };
   const out: Cand[] = [];
@@ -249,12 +249,14 @@ function BotText({ text }: { text: string }) {
   );
 }
 
-/* ====================== Menu extraction ====================== */
+/* ====================== Menu extraction (แก้ปัญหาต้องกดซ้ำ) ====================== */
 
+/** ตัดราคาที่ท้ายข้อความ เช่น " - 179.00 บาท" และ " - 1,100.00 บาท" */
 function stripPriceSuffix(s: string) {
   return s.replace(/\s*-\s*[\d,]+(?:\.\d{2})?\s*(?:บาท|฿|THB)?\s*$/i, '').trim();
 }
 
+/** แยกเมนูแบบมีเลขนำหน้าให้ได้ mapping 1..N -> label ที่อ่านรู้เรื่อง */
 function buildMenuMap(reply: string): Record<number, string> {
   const lines = reply.split(/\r?\n/);
   let cur: number | null = null;
@@ -291,43 +293,18 @@ export default function Page() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
-  // -------- signup states/handler (อยู่ "ข้างใน" Page เสมอ) --------
-  const [isSignup, setIsSignup] = useState(false);
-  const [suUsername, setSuUsername] = useState('');
-  const [suPassword, setSuPassword] = useState('');
-  const [suTel, setSuTel] = useState('');
-  const [suEmail, setSuEmail] = useState('');
+  /* balance */
+  const [balance, setBalance] = useState(0);
 
-  const handleSignup = async () => {
-    if (!suUsername || !suPassword) {
-      alert('กรอก Username/Password ก่อนน้า');
-      return;
-    }
+  const requestBalance = async () => {
+    if (!loggedInUser) return;
     try {
-      const res = await fetch('/api/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: suUsername,
-          password: suPassword,
-          tel: suTel || null,
-          email: suEmail || null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.message || 'register failed');
-
-      setIsLoggedIn(true);
-      setLoggedInUser(suUsername);
-      setIsOpen(true);
-      setMessages([{ role: 'bot', text: 'สมัครสมาชิกสำเร็จแล้ว! และเข้าสู่ระบบให้อัตโนมัติค่ะ' }]);
-
-      setSuUsername(''); setSuPassword(''); setSuTel(''); setSuEmail('');
-      setIsSignup(false);
-    } catch (e: any) {
-      alert(e.message || 'สมัครสมาชิกไม่สำเร็จ');
-    }
+      const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
+      const j = await r.json();
+      if (j?.ok) setBalance(Number(j.balance) || 0);
+    } catch {}
   };
+
   /* ------------ chat ------------ */
   const [isOpen, setIsOpen] = useState(true);
   const [messages, setMessages] = useState<any[]>([]);
@@ -476,6 +453,7 @@ export default function Page() {
     // === ตรวจจับ state รอ UID ===
     if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
       setAwaitingUID(true);
+      // เมื่อขอ UID ไม่ควรมีเมนูตัวเลขค้างอยู่
       setPendingNumberRange(null);
       setMenuMap({});
       setDynamicQR([]);
@@ -490,13 +468,16 @@ export default function Page() {
 
   /* ------------ robust send chains ------------ */
   const robustSendPackage = async (title: string, n: number | undefined, username?: string) => {
+    // primary = ชื่อแพ็กเกจ
     let data = await callAPI(title, username);
     if (!isUnknownReply(data.reply)) return data;
 
+    // fallback เลขล้วน
     if (typeof n === 'number') {
       data = await callAPI(String(n), username);
       if (!isUnknownReply(data.reply)) return data;
 
+      // fallback คำกริยา
       data = await callAPI(`เลือกแพ็กเกจ ${n}`, username);
     }
     return data;
@@ -512,6 +493,57 @@ export default function Page() {
     return data;
   };
 
+  /* ------------ ย้าย flow ยืนยันมาอยู่ส่วนกลาง ------------ */
+  const processConfirm = async () => {
+    // 1) ขอให้บอทสรุปรายการก่อน (ให้บับเบิลขึ้น)
+    const res = await callAPI('ยืนยัน', loggedInUser);
+    pushBot(res);
+
+    // 2) อ่านยอดชำระล่าสุด แล้วตัดเงินในกระเป๋าก่อน (พอแล้วจบ, ไม่พอค่อยโอนเพิ่ม)
+    try {
+      const expected = getExpectedAmountFromMessages([
+        ...messages,
+        { role: 'bot', text: res.reply || '' },
+      ]) ?? 0;
+
+      // โหลด balance ปัจจุบันจาก DB
+      let have = 0;
+      try {
+        const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
+        const j = await r.json();
+        have = j?.ok ? Number(j.balance || 0) : 0;
+      } catch {}
+
+      const use = Math.min(have, expected);
+      const remain = Math.max(0, Number((expected - use).toFixed(2)));
+
+      if (use > 0) {
+        // ใช้ endpoint ที่ให้มา: /api/user/update-balance (amount บวก/ลบได้)
+        const r = await fetch('/api/user/update-balance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: loggedInUser, amount: -use }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (j?.ok) setBalance(Number(j.balance ?? have - use));
+        pushBotMsg(`หักจากกระเป๋าแล้ว ${use.toFixed(2)} บาท`);
+      }
+
+      setPaidSoFar(use); // ให้ขั้นตอนสลิปรู้ว่าเราจ่ายไปแล้วเท่าไร
+
+      if (remain === 0) {
+        setShowPaidButton(false);
+        pushBotMsg('ชำระเงินเสร็จสิ้น ✅ ขอบคุณที่ใช้บริการค่ะ');
+        setTimeout(() => pushBotMsg('ขอบคุณที่ใช้บริการค่ะ 💖'), 1800);
+      } else {
+        setShowPaidButton(true);
+        pushBotMsg(`ยอดคงเหลือที่ต้องโอนเพิ่ม: ${remain.toFixed(2)} บาท`);
+      }
+    } catch {
+      setShowPaidButton(true);
+    }
+  };
+
   /* ------------ send ------------ */
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -522,15 +554,20 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
+    // ถ้ากำลังรอ UID อยู่ ให้พยายามกรอก UID แบบ robust (แก้เคส "ไม่เข้าใจ")
     if (awaitingUID && /^\d{6,12}$/.test(original)) {
       const data = await robustSendUID(original, loggedInUser);
       pushBot(data);
       return;
     }
 
+    // ถ้า user พิมพ์เป็นเลข และเรามีเมนู -> map เป็นข้อความ option ให้ backend เข้าใจง่ายขึ้น
     if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
       const n = parseInt(original, 10);
-      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
+      if (
+        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
+        menuMap[n]
+      ) {
         const title = menuMap[n];
         const data = await robustSendPackage(title, n, loggedInUser);
         pushBot(data);
@@ -538,6 +575,7 @@ export default function Page() {
       }
     }
 
+    // ปุ่ม "ดูเซ็ตตัวอื่น"
     if (/^ดูเซ็ตตัวอื่น$/i.test(original)) {
       if (!arMode) {
         pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~');
@@ -551,16 +589,17 @@ export default function Page() {
       return;
     }
 
+    // อยู่ในโหมดรอตัวละคร → ส่งตรงให้ /api
     if (arMode && !readyCalc) {
       const data = await callAPI(original, loggedInUser);
       pushBot(data);
       return;
     }
 
+    // ใช้ NLU (ยืนยัน/ยกเลิก/สลับโหมดเกม)
     const nluRes = await nlu(original);
     if (nluRes.intent === 'confirm') {
-      const data = await callAPI('ยืนยัน', loggedInUser);
-      pushBot(data);
+      await processConfirm();
       return;
     }
     if (nluRes.intent === 'cancel') {
@@ -591,6 +630,7 @@ export default function Page() {
       return;
     }
 
+    // default
     const data = await callAPI(original, loggedInUser);
     pushBot(data);
   };
@@ -601,6 +641,18 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
     setShowPaidButton(false);
 
+    // ✅ กรณีกดปุ่ม "ยืนยัน" ให้วิ่งเข้าฟังก์ชันเดียวกัน
+    if (value.trim() === 'ยืนยัน') {
+      await processConfirm();
+      return;
+    }
+    if (value.trim() === 'ยกเลิก') {
+      const data = await callAPI('ยกเลิก', loggedInUser);
+      pushBot(data);
+      return;
+    }
+
+    // ปุ่ม "ดูเซ็ตตัวอื่น"
     if (value.trim() === 'ดูเซ็ตตัวอื่น') {
       if (!arMode) {
         pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~');
@@ -609,14 +661,21 @@ export default function Page() {
       setReadyCalc(null);
       setGearGi({});
       setGearHsr({});
-      const open = await callAPI(arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail', loggedInUser);
+      const open = await callAPI(
+        arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail',
+        loggedInUser
+      );
       pushBot(open);
       return;
     }
 
+    // ถ้าปุ่มเป็นเลขและเรามี mapping -> ส่งชื่อแพ็กเกจ
     if (/^\d+$/.test(value) && (pendingNumberRange || Object.keys(menuMap).length)) {
       const n = parseInt(value, 10);
-      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
+      if (
+        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
+        menuMap[n]
+      ) {
         const title = menuMap[n];
         const data = await robustSendPackage(title, n, loggedInUser);
         pushBot(data);
@@ -674,10 +733,12 @@ export default function Page() {
 
       if (result.status === 'ok') {
         setPaidSoFar(0);
-        pushBotMsg('ชำระเงินเสร็จสิ้น ✅ ขอบคุณที่ใช้บริการค่ะ');
         setShowPaidButton(false);
         setDynamicQR([]);
         setConfirmMode(false);
+        pushBotMsg('ชำระเงินเสร็จสิ้น ✅ ขอบคุณที่ใช้บริการค่ะ');
+        setTimeout(() => pushBotMsg('ขอบคุณที่ใช้บริการค่ะ 💖'), 1800);
+        requestBalance();
       } else if (result.status === 'under') {
         const received = Number(result.actual || 0);
         const diff = Number(result.diff).toFixed(2);
@@ -692,12 +753,23 @@ export default function Page() {
         ]);
         setShowPaidButton(true);
       } else if (result.status === 'over') {
-        const diff = Number(result.diff).toFixed(2);
-        pushBotMsg(`โอนเกินยอด (เกิน : ${diff} บาท)\nกรุณาติดต่อแอดมินเพื่อรับเงินส่วนเกินคืนนะคะ`);
+        const diff = Number(result.diff || 0);
+        // โอนเกิน → เก็บส่วนเกินเข้ากระเป๋า
+        const r = await fetch('/api/user/update-balance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: loggedInUser, amount: diff }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (j?.ok) setBalance(Number(j.balance ?? balance) || balance + diff);
+
+        pushBotMsg(`โอนเกินยอด (เกิน : ${diff.toFixed(2)} บาท)\nเก็บไว้ในกระเป๋าเงินของคุณแล้วค่ะ`);
         setShowPaidButton(false);
         setDynamicQR([]);
         setConfirmMode(false);
         setPaidSoFar(0);
+        setTimeout(() => pushBotMsg('ขอบคุณที่ใช้บริการค่ะ 💖'), 1800);
+        requestBalance();
       } else {
         pushBotMsg('อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲');
       }
@@ -788,32 +860,6 @@ export default function Page() {
               return `• ${s}: ${setS}${mainS}`;
             }).join('\n');
             pushBotMsg(`สรุป Relic ครบ 6 ชิ้นแล้วค่ะ ✨\n${ms}`);
-
-            try {
-              const payload = HSR_SLOTS.map((s) => {
-                const it = next[s as HsrSlot];
-                return {
-                  slot: s,
-                  setName: it?.setName || null,
-                  mainStat: it?.mainStat || null,
-                  substats: it?.substats || [],
-                };
-              });
-              const resp = await fetch('/api/relic/recommend', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: payload }),
-              });
-              if (resp.ok) {
-                const r = await resp.json();
-                if (r?.reply) pushBotMsg(r.reply);
-                else if (Array.isArray(r?.suggestions) && r.suggestions.length) {
-                  pushBotMsg(`ข้อเสนอจากฐานข้อมูล:\n- ${r.suggestions.join('\n- ')}`);
-                }
-              }
-            } catch {
-              // เงียบ ๆ ถ้าไม่มี endpoint
-            }
           }
         }
       }
@@ -834,19 +880,26 @@ export default function Page() {
   /* ------------ render ------------ */
   return (
     <div className="min-h-screen bg-[#0f1623] text-gray-100 flex flex-col md:flex-row p-4 gap-4">
-      {/* Login / Signup card */}
+      {/* Left: Login/Balance */}
       <div className="w-full md:w-1/4 bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl ring-1 ring-white/10 p-6">
         {isLoggedIn ? (
           <>
-            <div className="text-center mb-6">
-              <p className="text-lg">บัญชีที่เข้าสู่ระบบ: {loggedInUser}</p>
+            <div className="text-center mb-3">
+              <p className="text-lg">
+                บัญชีที่เข้าสู่ระบบ: <span className="font-semibold">{loggedInUser}</span>
+              </p>
+              <p className="text-emerald-300 mt-2">
+                ยอดคงเหลือในกระเป๋า: <span className="font-semibold">{balance.toFixed(2)}</span> บาท
+              </p>
             </div>
-            <div className="flex justify-center">
+            <div className="flex gap-3 justify-center">
+              <GlassPill color="indigo" onClick={requestBalance}>รีเฟรชยอด</GlassPill>
               <GlassPill
                 color="indigo"
                 onClick={() => {
                   setIsLoggedIn(false);
                   setLoggedInUser('');
+                  setBalance(0);
                   setMessages([{ role: 'bot', text: 'คุณได้ออกจากระบบแล้วค่ะ' }]);
                   setIsOpen(false);
                   setDynamicQR([]); setConfirmMode(false);
@@ -856,7 +909,6 @@ export default function Page() {
                   setPendingNumberRange(null); setMenuMap({});
                   setAwaitingUID(false);
                 }}
-                className="px-6"
               >
                 logout
               </GlassPill>
@@ -864,115 +916,44 @@ export default function Page() {
           </>
         ) : (
           <>
-            {!isSignup ? (
-              // ------------- LOGIN MODE -------------
-              <>
-                <div className="text-center mb-6">
-                  <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
-                </div>
-                <div className="mb-4">
-                  <label className="block text-sm mb-2 opacity-80">Username:</label>
-                  <input
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                    placeholder="ใส่ username..."
-                  />
-                </div>
-                <div className="mb-6">
-                  <label className="block text-sm mb-2 opacity-80">Password:</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                    placeholder="ใส่ password..."
-                  />
-                </div>
-                <div className="flex justify-center">
-                  <GlassPill
-                    color="indigo"
-                    className="w-full justify-center"
-                    onClick={async () => {
-                      // (โปรดักชัน: เรียก /api/login จริง ๆ ได้)
-                      setIsLoggedIn(true);
-                      setLoggedInUser(username || 'user');
-                      setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
-                      setIsOpen(true);
-                    }}
-                  >
-                    เข้าสู่ระบบ
-                  </GlassPill>
-                </div>
-                {/* ลิงก์ตัวเล็ก ไม่มีกรอบ ใต้ปุ่ม */}
-                <div className="mt-3 text-center">
-                  <button
-                    onClick={() => setIsSignup(true)}
-                    className="text-sm text-indigo-300/90 hover:text-indigo-200 hover:underline focus:outline-none focus:underline"
-                  >
-                    สมัครสมาชิก
-                  </button>
-                </div>
-              </>
-            ) : (
-              // ------------- SIGNUP MODE -------------
-              <>
-                <div className="text-center mb-6">
-                  <p className="text-lg">สมัครสมาชิก</p>
-                </div>
-
-                <div className="mb-3">
-                  <label className="block text-sm mb-2 opacity-80">Username</label>
-                  <input
-                    value={suUsername}
-                    onChange={(e) => setSuUsername(e.target.value)}
-                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                    placeholder="ตั้ง username"
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label className="block text-sm mb-2 opacity-80">Password</label>
-                  <input
-                    type="password"
-                    value={suPassword}
-                    onChange={(e) => setSuPassword(e.target.value)}
-                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                    placeholder="ตั้งรหัสผ่าน"
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label className="block text-sm mb-2 opacity-80">เบอร์โทร (ไม่บังคับ)</label>
-                  <input
-                    value={suTel}
-                    onChange={(e) => setSuTel(e.target.value)}
-                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                    placeholder="0800000000"
-                  />
-                </div>
-
-                <div className="mb-4">
-                  <label className="block text-sm mb-2 opacity-80">อีเมล (ไม่บังคับ)</label>
-                  <input
-                    type="email"
-                    value={suEmail}
-                    onChange={(e) => setSuEmail(e.target.value)}
-                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                    placeholder="you@example.com"
-                  />
-                </div>
-
-                <div className="flex gap-2">
-                  <GlassPill color="green" className="flex-1 justify-center" onClick={handleSignup}>
-                    สร้างบัญชี
-                  </GlassPill>
-                  <GlassPill color="gray" className="flex-1 justify-center" onClick={() => setIsSignup(false)}>
-                    กลับไปเข้าสู่ระบบ
-                  </GlassPill>
-                </div>
-              </>
-            )}
+            <div className="text-center mb-6">
+              <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm mb-2 opacity-80">Username:</label>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                placeholder="ใส่ username..."
+              />
+            </div>
+            <div className="mb-6">
+              <label className="block text-sm mb-2 opacity-80">Password:</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                placeholder="ใส่ password..."
+              />
+            </div>
+            <div className="flex justify-center">
+              <GlassPill
+                color="indigo"
+                className="w-full justify-center"
+                onClick={async () => {
+                  // (เดโม) Login ตรง ๆ และโหลดยอดคงเหลือ
+                  setIsLoggedIn(true);
+                  setLoggedInUser(username || 'user');
+                  setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
+                  setIsOpen(true);
+                  setTimeout(requestBalance, 200);
+                }}
+              >
+                เข้าสู่ระบบ
+              </GlassPill>
+            </div>
           </>
         )}
       </div>
@@ -1127,7 +1108,7 @@ export default function Page() {
             <div className="p-2 flex items-center gap-2 bg-transparent rounded-b-2xl">
               <input
                 type="text"
-                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 835235056)' : 'พูดคุยกับแชทบอทของเราได้ตรงนี้เลยจ้า'}
+                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 835235056)' : 'พิมพ์เลขเลือกแพ็กเกจได้เลย (เช่น 2) หรือพิมพ์ข้อความ'}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 className="w-full rounded-full px-4 py-2 text-gray-100 bg-white/10 backdrop-blur-md ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
@@ -1140,7 +1121,9 @@ export default function Page() {
           </div>
         )}
 
-        {!isLoggedIn && <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>}
+        {!isLoggedIn && (
+          <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>
+        )}
         {!isOpen && isLoggedIn && (
           <div className="mx-auto mt-2">
             <GlassPill color="indigo" onClick={() => setIsOpen(true)}>

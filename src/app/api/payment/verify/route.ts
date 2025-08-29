@@ -1,67 +1,77 @@
+// /src/app/api/payment/verify/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import os from "os";
-import path from "path";
-import sharp from "sharp";
-import { recognize } from "tesseract.js";
+import mysql from "mysql2/promise";
 
 export const runtime = "nodejs";
 
-// --- utils server OCR (fallback) ---
-const THAI_DIGITS = "๐๑๒๓๔๕๖๗๘๙";
-const toArabic = (s: string) => [...(s||"")].map(c=>{
-  const i = THAI_DIGITS.indexOf(c); return i>=0? String(i): c;
-}).join("");
-const normalize = (s: string) =>
-  toArabic(s).replace(/\u200b/g,"").replace(/[，、]/g,",")
-             .replace(/[“”]/g,'"').replace(/[’‘]/g,"'")
-             .replace(/\s+/g," ").trim();
+type Body = {
+  username?: string;
+  expectedAmount?: number;
+  actualAmount?: number;
+  ref?: string;
+};
 
-async function ocrAmountServer(filePath: string): Promise<number | null> {
-  const tmp = path.join(os.tmpdir(), `slip-${Date.now()}.png`);
-  await sharp(filePath).grayscale().normalize().png().toFile(tmp);
-  const { data: { text } } = await recognize(tmp, "tha+eng"); // ไม่ชี้ workerPath ใด ๆ
-  await fs.unlink(tmp).catch(()=>{});
-  const clean = normalize(text || "");
-  let m = clean.match(/จำนวน\s*:?\s*([0-9][\d,]*[.,]\d{2})\s*(บาท)?/i);
-  if (!m) m = clean.match(/([0-9][\d,]*[.,]\d{2})\s*(บาท)?/i);
-  return m ? parseFloat(m[1].replace(/,/g,".").replace(/[^\d.]/g,"")) : null;
+// --- DB pool (แก้ ENV ตามเครื่องได้) ---
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || "127.0.0.1",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASS || "",
+  database: process.env.DB_NAME || "chatbot_db",
+  charset: "utf8mb4_general_ci",
+  waitForConnections: true,
+  connectionLimit: 10,
+});
+
+async function getBalance(username: string): Promise<number> {
+  const [rows] = await pool.query("SELECT balance FROM users WHERE username=?", [username]);
+  const r = Array.isArray(rows) ? (rows as any[])[0] : undefined;
+  return Number(r?.balance ?? 0);
+}
+async function addBalance(username: string, delta: number): Promise<number> {
+  await pool.query("UPDATE users SET balance = IFNULL(balance,0) + ? WHERE username=?", [delta, username]);
+  return getBalance(username);
 }
 
 export async function POST(req: NextRequest) {
-  const ct = req.headers.get("content-type") || "";
   try {
-    if (ct.includes("application/json")) {
-      // โหมดใหม่: รับตัวเลขจาก client OCR มาเลย
-      const { expectedAmount, actualAmount } = await req.json();
-      const expected = Number(expectedAmount);
-      const actual = Number(actualAmount);
-      if (!isFinite(expected) || !isFinite(actual)) return NextResponse.json({ status: "fail" });
-      if (Math.abs(actual - expected) < 0.01) return NextResponse.json({ status: "ok", actual });
-      if (actual < expected) return NextResponse.json({ status: "under", diff: expected - actual, actual });
-      return NextResponse.json({ status: "over", diff: actual - expected, actual });
+    const ct = req.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) {
+      return NextResponse.json({ error: "JSON only" }, { status: 400 });
     }
 
-    // เดิม: รับไฟล์ (fallback)
-    const formData = await req.formData();
-    const expected = parseFloat(formData.get("expectedAmount") as string);
-    const file = formData.get("file") as File;
-    if (!file || isNaN(expected)) return NextResponse.json({ status: "fail" });
+    const body = (await req.json()) as Body;
+    const expected = Number(body.expectedAmount);
+    const actual = Number(body.actualAmount);
+    const username = (body.username || "").trim();
 
-    const bytes = Buffer.from(await file.arrayBuffer());
-    const tmpPath = path.join(os.tmpdir(), `${Date.now()}-${file.name}`);
-    await fs.writeFile(tmpPath, bytes);
-
-    try {
-      const actual = await ocrAmountServer(tmpPath);
-      if (actual == null) return NextResponse.json({ status: "fail" });
-      if (Math.abs(actual - expected) < 0.01) return NextResponse.json({ status: "ok", actual });
-      if (actual < expected) return NextResponse.json({ status: "under", diff: expected - actual, actual });
-      return NextResponse.json({ status: "over", diff: actual - expected, actual });
-    } finally {
-      await fs.unlink(tmpPath).catch(()=>{});
+    if (!isFinite(expected) || !isFinite(actual)) {
+      return NextResponse.json({ status: "fail", reason: "bad_number" }, { status: 400 });
     }
-  } catch {
-    return NextResponse.json({ status: "fail" });
+
+    // ตรงเป๊ะ
+    if (Math.abs(actual - expected) < 0.01) {
+      let newBalance: number | undefined;
+      if (username) newBalance = await getBalance(username);
+      return NextResponse.json({ status: "ok", actual, newBalance });
+    }
+
+    // จ่ายไม่พอ
+    if (actual < expected) {
+      const diff = Number((expected - actual).toFixed(2));
+      let newBalance: number | undefined;
+      if (username) newBalance = await getBalance(username);
+      return NextResponse.json({ status: "under", diff, actual, newBalance });
+    }
+
+    // โอนเกิน → เก็บส่วนต่างเข้ากระเป๋า
+    const over = Number((actual - expected).toFixed(2));
+    let newBalance: number | undefined;
+    if (username) {
+      newBalance = await addBalance(username, over);
+    }
+    return NextResponse.json({ status: "over", diff: over, actual, newBalance });
+  } catch (e) {
+    console.error("verify error:", e);
+    return NextResponse.json({ status: "fail" }, { status: 500 });
   }
 }
