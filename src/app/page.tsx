@@ -4,21 +4,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import Tesseract from 'tesseract.js';
+import Link from 'next/link';
+
+// ✅ ใช้ OCR เกียร์จาก lib ใหม่ (แทน parser เดิมทั้งหมด)
+import { ocrGear, GearItem, GiSlot, HsrSlot, GameKey } from '@/lib/gear-ocr';
 
 /* ====================== Types ====================== */
 type QuickReply = { label: string; value: string };
 type ApiResponse = { reply?: string; quickReplies?: string[]; paymentRequest?: any };
-type GameKey = 'gi' | 'hsr';
-
-type Stat = { name: string; value: string };
-
-type GearItem = {
-  url: string;
-  piece?: string | null;
-  setName?: string | null;
-  mainStat?: Stat | null;
-  substats?: Stat[];
-};
 
 type NluResp =
   | { intent: 'artifact_gi'; character?: string }
@@ -54,87 +47,6 @@ const splitlines = (s: string) =>
 
 const GI_SLOTS = ['Flower', 'Plume', 'Sands', 'Goblet', 'Circlet'] as const;
 const HSR_SLOTS = ['Head', 'Hands', 'Body', 'Feet', 'Planar Sphere', 'Link Rope'] as const;
-type GiSlot = (typeof GI_SLOTS)[number];
-type HsrSlot = (typeof HSR_SLOTS)[number];
-
-/* ====================== TH -> EN dictionaries ====================== */
-
-const STAT_MAP: Record<string, string> = {
-  // GI/ทั่วไป
-  'พลังชีวิต': 'HP',
-  'พลังโจมตี': 'ATK',
-  'พลังป้องกัน': 'DEF',
-  'ความชำนาญธาตุ': 'Elemental Mastery',
-  'การฟื้นฟูพลังงาน': 'Energy Recharge',
-  'อัตราการฟื้นฟูพลังงาน': 'Energy Recharge',
-  'อัตราคริติคอล': 'CRIT Rate',
-  'อัตราคริ': 'CRIT Rate',
-  'ความแรงคริติคอล': 'CRIT DMG',
-  'ความแรงคริ': 'CRIT DMG',
-  'โบนัสการรักษา': 'Healing Bonus',
-  'ความเสียหายกายภาพ': 'Physical DMG Bonus',
-  'โบนัสความเสียหายไฟ': 'Pyro DMG Bonus',
-  'โบนัสความเสียหายน้ำ': 'Hydro DMG Bonus',
-  'โบนัสความเสียหายไฟฟ้า': 'Electro DMG Bonus',
-  'โบนัสความเสียหายน้ำแข็ง': 'Cryo DMG Bonus',
-  'โบนัสความเสียหายลม': 'Anemo DMG Bonus',
-  'โบนัสความเสียหายหิน': 'Geo DMG Bonus',
-  'โบนัสความเสียหายหญ้า': 'Dendro DMG Bonus',
-  // HSR
-  'อัตราติดเอฟเฟกต์': 'Effect Hit Rate',
-  'ต้านทานเอฟเฟกต์': 'Effect RES',
-  'ความเร็ว': 'SPD',
-  'ฟื้นพลังงาน': 'Energy Regeneration Rate',
-  'ผลการทำลาย': 'Break Effect',
-};
-
-const PIECE_MAP_GI: Record<string, GiSlot> = {
-  'flower of life': 'Flower',
-  'plume of death': 'Plume',
-  'sands of eon': 'Sands',
-  'goblet of eonothem': 'Goblet',
-  'circlet of logos': 'Circlet',
-  'ดอกไม้': 'Flower',
-  'ขนนก': 'Plume',
-  'ทราย': 'Sands',
-  'ถ้วย': 'Goblet',
-  'มงกุฎ': 'Circlet',
-};
-
-const PIECE_MAP_HSR: Record<string, HsrSlot> = {
-  head: 'Head',
-  hands: 'Hands',
-  body: 'Body',
-  feet: 'Feet',
-  'planar sphere': 'Planar Sphere',
-  'link rope': 'Link Rope',
-  'หัว': 'Head',
-  'มือ': 'Hands',
-  'ลำตัว': 'Body',
-  'เท้า': 'Feet',
-  'ทรงกลม': 'Planar Sphere',
-  'เชือก': 'Link Rope',
-};
-
-/* ============ normalize ไทย→อังกฤษ แบบฟัซซี่ ============ */
-function normalizeStatWords(line: string): string {
-  const fuzzy = (s: string) => s.split('').map((ch) => (/\s/.test(ch) ? ch : `${ch}\\s*`)).join('');
-  let s = toArabic(line);
-  for (const [th, en] of Object.entries(STAT_MAP)) {
-    const re = new RegExp(fuzzy(th), 'gi');
-    if (re.test(s)) s = s.replace(re, en);
-  }
-  s = s
-    .replace(/[·•●○・]/g, '•')
-    .replace(/\u200b/g, '')
-    .replace(/[，、]/g, ',')
-    .replace(/[“”]/g, '"')
-    .replace(/[’‘]/g, "'")
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-  return s;
-}
-const normalizeLinesToEN = (lines: string[]) => lines.map((l) => normalizeStatWords(l));
 
 /* ====================== API helpers ====================== */
 
@@ -191,8 +103,7 @@ function cleanSlipText(s: string) {
 }
 
 function parseAmountCandidates(lines: string[]) {
-  const NUM =
-    /(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/g;
+  const NUM = /(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/g;
 
   type Cand = { value: number; raw: string; line: string; score: number };
   const out: Cand[] = [];
@@ -262,248 +173,6 @@ function getExpectedAmountFromMessages(msgs: any[]): number | null {
     }
   }
   return null;
-}
-
-/* ====================== OCR: Artifact/Relic ====================== */
-
-function uniqStats(subs: Stat[]) {
-  const out: Stat[] = [];
-  const seen = new Set<string>();
-  for (const s of subs) {
-    const k = `${s.name.toLowerCase()}|${s.value}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(s);
-  }
-  return out.slice(0, 8);
-}
-
-function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
-  const joined = linesEN.join(' ').toLowerCase();
-  for (const [k, v] of Object.entries(PIECE_MAP_GI)) {
-    if (joined.includes(k.toLowerCase())) return v;
-  }
-  if (/(^|\s)4780(\s|$)/.test(joined)) return 'Flower';
-  if (/(^|\s)311(\s|$)/.test(joined)) return 'Plume';
-  return null;
-}
-
-function detectPieceHSR(linesEN: string[]): HsrSlot | null {
-  const joined = linesEN.join(' ').toLowerCase();
-  for (const [k, v] of Object.entries(PIECE_MAP_HSR)) {
-    if (joined.includes(k.toLowerCase())) return v;
-  }
-  return null;
-}
-
-/* ====== MAIN-STAT SMART PARSER ====== */
-
-const MAIN_NAMES = [
-  'HP',
-  'ATK',
-  'DEF',
-  'Elemental Mastery',
-  'Energy Recharge',
-  'CRIT Rate',
-  'CRIT DMG',
-  'Healing Bonus',
-  'Pyro DMG Bonus',
-  'Hydro DMG Bonus',
-  'Electro DMG Bonus',
-  'Cryo DMG Bonus',
-  'Anemo DMG Bonus',
-  'Geo DMG Bonus',
-  'Dendro DMG Bonus',
-  'Physical DMG Bonus',
-  // HSR
-  'Effect Hit Rate',
-  'Effect RES',
-  'SPD',
-  'Break Effect',
-  'Energy Regeneration Rate',
-];
-
-const MAIN_RE = new RegExp(
-  `\\b(${MAIN_NAMES.map((n) => n.replace(/ /g, '\\s+')).join('|')})\\b\\s*:?\\s*([0-9][\\d,.]*\\s*%?)`,
-  'i'
-);
-
-function extractMainStatSmart(
-  linesENIn: string[],
-  piece: GiSlot | HsrSlot | null,
-  game: GameKey
-): Stat | null {
-  const linesEN = linesENIn.map((x) => normalizeStatWords(x));
-
-  const headLines: string[] = [];
-  for (const ln of linesEN) {
-    const x = ln.trim();
-    if (!x) continue;
-    if (/^•/.test(x)) break;
-    if (/^(\d-?Piece|2-?Piece|4-?Piece)/i.test(x)) break;
-    if (/set:?/i.test(x) && /bonus|increases|เพิ่ม/i.test(x)) break;
-    headLines.push(x);
-    if (headLines.length >= 10) break;
-  }
-  const headJoined = headLines.join(' ');
-
-  const candidates: Stat[] = [];
-  const collect = (txt: string) => {
-    let m: RegExpExecArray | null;
-    const re = new RegExp(MAIN_RE, 'gi');
-    while ((m = re.exec(txt))) {
-      candidates.push({ name: m[1], value: (m[2] || '').replace(/,/g, '').replace(/\s+/g, '') });
-    }
-  };
-  collect(headJoined);
-  for (const ln of headLines) collect(ln);
-
-  const isPct = (v: string) => /%$/.test(v);
-  const isTinyInt = (v: string) => !isPct(v) && /^\d+(\.\d+)?$/.test(v) && parseFloat(v) <= 60;
-
-  const filtered = candidates.filter((c) => {
-    if (game === 'gi' && piece === 'Goblet') {
-      if (/(hp|atk|def)/i.test(c.name) && !isPct(c.value)) return false;
-    }
-    if (game === 'gi' && piece === 'Circlet') {
-      if (!isPct(c.value) && !/Elemental Mastery/i.test(c.name)) {
-        if (isTinyInt(c.value)) return false;
-      }
-    }
-    if (game === 'gi' && piece === 'Sands') {
-      if (!isPct(c.value) && !/Elemental Mastery/i.test(c.name)) {
-        if (isTinyInt(c.value)) return false;
-      }
-    }
-    return true;
-  });
-
-  if (game === 'gi' && filtered.length === 0 && (piece === 'Flower' || piece === 'Plume')) {
-    if (piece === 'Flower') return { name: 'HP', value: '4780' };
-    if (piece === 'Plume') return { name: 'ATK', value: '311' };
-  }
-
-  if (!filtered.length) return null;
-
-  const score = (s: Stat) => {
-    const v = parseFloat(s.value.replace('%', ''));
-    const pct = /%$/.test(s.value) ? 100 : 0;
-    const important = /(DMG Bonus|CRIT|Recharge|Mastery|Effect|Break|SPD|Healing)/i.test(s.name) ? 5 : 0;
-    return pct + important + (isNaN(v) ? 0 : v / 100);
-  };
-
-  const byName = new Map<string, Stat>();
-  for (const c of filtered) {
-    const key = c.name.toLowerCase();
-    if (!byName.has(key) || score(c) > score(byName.get(key)!)) byName.set(key, c);
-  }
-  return [...byName.values()].sort((a, b) => score(b) - score(a))[0] ?? null;
-}
-
-/* ====== SUBSTATS SMART PARSER ====== */
-
-function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[] {
-  const linesEN = linesENIn.map((x) => normalizeStatWords(x));
-  const bulletStart = /^\s*[•\-·●○・*]/;
-  const stopRe = /^(2-?Piece|4-?Piece)| set:?/i;
-
-  const out: Stat[] = [];
-  const push = (s: Stat) => {
-    if (mainStat && s.name.toLowerCase() === mainStat.name.toLowerCase() && s.value === mainStat.value) return;
-    if (!out.some((x) => x.name.toLowerCase() === s.name.toLowerCase() && x.value === s.value)) out.push(s);
-  };
-
-  const NAME_FIRST =
-    /(HP|ATK|DEF|Elemental Mastery|Energy Recharge|CRIT Rate|CRIT DMG|Effect Hit Rate|Effect RES|SPD|Break Effect|(?:Pyro|Hydro|Electro|Cryo|Anemo|Geo|Dendro) DMG Bonus|Physical DMG Bonus)\s*\+?\s*([0-9][\d,.]*\s*%?)/i;
-  const NUM_FIRST =
-    /\+?\s*([0-9][\d,.]*\s*%?)\s*(HP|ATK|DEF|Elemental Mastery|Energy Recharge|CRIT Rate|CRIT DMG|Effect Hit Rate|Effect RES|SPD|Break Effect|(?:Pyro|Hydro|Electro|Cryo|Anemo|Geo|Dendro) DMG Bonus|Physical DMG Bonus)/i;
-
-  const feed = (raw: string) => {
-    const s = normalizeStatWords(raw).replace(/\s{2,}/g, ' ').trim();
-    const line = s.replace(bulletStart, '').trim();
-
-    let m = line.match(NAME_FIRST);
-    if (m) {
-      push({ name: m[1], value: m[2].replace(/,/g, '').replace(/\s+/g, '') });
-      return;
-    }
-    m = line.match(NUM_FIRST);
-    if (m) {
-      push({ name: m[2], value: m[1].replace(/,/g, '').replace(/\s+/g, '') });
-      return;
-    }
-  };
-
-  for (const ln of linesEN) {
-    if (stopRe.test(ln)) break;
-    if (!ln) continue;
-    feed(ln);
-  }
-
-  return uniqStats(out);
-}
-
-/* ====== parse GI / HSR ====== */
-
-function parseGI(text: string) {
-  const raw = text || '';
-  const lines = splitlines(raw);
-  const linesEN = normalizeLinesToEN(lines);
-  const joined = linesEN.join(' ');
-
-  const piece = detectPieceGI(linesEN, raw);
-  const mainStat = extractMainStatSmart(linesEN, piece, 'gi');
-  const substats = extractSubstatsSmart(linesEN, mainStat);
-
-  const setGuess =
-    joined.match(
-      /(Gladiator.?s Finale|Golden Troupe|Marechaussee Hunter|Noblesse Oblige|Viridescent Venerer|Deepwood Memories|Emblem of Severed Fate)/i
-    )?.[1] ?? null;
-
-  return {
-    game: 'gi' as const,
-    setName: setGuess,
-    pieceName: piece ?? null,
-    piece,
-    mainStat: mainStat || null,
-    substats,
-  };
-}
-
-function parseHSR(text: string) {
-  const raw = text || '';
-  const lines = splitlines(raw);
-  const linesEN = normalizeLinesToEN(lines);
-  const joined = linesEN.join(' ');
-
-  const piece = detectPieceHSR(linesEN);
-  const mainStat = extractMainStatSmart(linesEN, piece, 'hsr');
-  const substats = extractSubstatsSmart(linesEN, mainStat);
-
-  const setGuess =
-    joined.match(
-      /(Genius of Brilliant Stars|Musketeer of Wild Wheat|Hunter of Glacial Forest|Band of Sizzling Thunder)/i
-    )?.[1] ?? null;
-
-  return {
-    game: 'hsr' as const,
-    setName: setGuess,
-    pieceName: piece ?? null,
-    piece,
-    mainStat: mainStat || null,
-    substats,
-  };
-}
-
-async function ocrGear(file: File, game: GameKey) {
-  const {
-    data: { text },
-  } = await Tesseract.recognize(file, 'tha+eng', {
-    workerPath: '/tesseract/worker.min.js',
-    corePath: '/tesseract/tesseract-core-simd-lstm.wasm.js',
-    langPath: '/tesseract/lang',
-  } as any);
-  return game === 'gi' ? parseGI(text) : parseHSR(text);
 }
 
 /* ====================== UI: Liquid/Glass ====================== */
@@ -580,14 +249,12 @@ function BotText({ text }: { text: string }) {
   );
 }
 
-/* ====================== Menu extraction (แก้ปัญหาต้องกดซ้ำ) ====================== */
+/* ====================== Menu extraction ====================== */
 
-/** ตัดราคาที่ท้ายข้อความ เช่น " - 179.00 บาท" และ " - 1,100.00 บาท" */
 function stripPriceSuffix(s: string) {
   return s.replace(/\s*-\s*[\d,]+(?:\.\d{2})?\s*(?:บาท|฿|THB)?\s*$/i, '').trim();
 }
 
-/** แยกเมนูแบบมีเลขนำหน้าให้ได้ mapping 1..N -> label ที่อ่านรู้เรื่อง */
 function buildMenuMap(reply: string): Record<number, string> {
   const lines = reply.split(/\r?\n/);
   let cur: number | null = null;
@@ -624,6 +291,43 @@ export default function Page() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
+  // -------- signup states/handler (อยู่ "ข้างใน" Page เสมอ) --------
+  const [isSignup, setIsSignup] = useState(false);
+  const [suUsername, setSuUsername] = useState('');
+  const [suPassword, setSuPassword] = useState('');
+  const [suTel, setSuTel] = useState('');
+  const [suEmail, setSuEmail] = useState('');
+
+  const handleSignup = async () => {
+    if (!suUsername || !suPassword) {
+      alert('กรอก Username/Password ก่อนน้า');
+      return;
+    }
+    try {
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: suUsername,
+          password: suPassword,
+          tel: suTel || null,
+          email: suEmail || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || 'register failed');
+
+      setIsLoggedIn(true);
+      setLoggedInUser(suUsername);
+      setIsOpen(true);
+      setMessages([{ role: 'bot', text: 'สมัครสมาชิกสำเร็จแล้ว! และเข้าสู่ระบบให้อัตโนมัติค่ะ' }]);
+
+      setSuUsername(''); setSuPassword(''); setSuTel(''); setSuEmail('');
+      setIsSignup(false);
+    } catch (e: any) {
+      alert(e.message || 'สมัครสมาชิกไม่สำเร็จ');
+    }
+  };
   /* ------------ chat ------------ */
   const [isOpen, setIsOpen] = useState(true);
   const [messages, setMessages] = useState<any[]>([]);
@@ -772,7 +476,6 @@ export default function Page() {
     // === ตรวจจับ state รอ UID ===
     if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
       setAwaitingUID(true);
-      // เมื่อขอ UID ไม่ควรมีเมนูตัวเลขค้างอยู่
       setPendingNumberRange(null);
       setMenuMap({});
       setDynamicQR([]);
@@ -787,16 +490,13 @@ export default function Page() {
 
   /* ------------ robust send chains ------------ */
   const robustSendPackage = async (title: string, n: number | undefined, username?: string) => {
-    // primary = ชื่อแพ็กเกจ
     let data = await callAPI(title, username);
     if (!isUnknownReply(data.reply)) return data;
 
-    // fallback เลขล้วน
     if (typeof n === 'number') {
       data = await callAPI(String(n), username);
       if (!isUnknownReply(data.reply)) return data;
 
-      // fallback คำกริยา
       data = await callAPI(`เลือกแพ็กเกจ ${n}`, username);
     }
     return data;
@@ -822,20 +522,15 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    // ถ้ากำลังรอ UID อยู่ ให้พยายามกรอก UID แบบ robust (แก้เคส "ไม่เข้าใจ")
     if (awaitingUID && /^\d{6,12}$/.test(original)) {
       const data = await robustSendUID(original, loggedInUser);
       pushBot(data);
       return;
     }
 
-    // ถ้า user พิมพ์เป็นเลข และเรามีเมนู -> map เป็นข้อความ option ให้ backend เข้าใจง่ายขึ้น
     if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
       const n = parseInt(original, 10);
-      if (
-        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
-        menuMap[n]
-      ) {
+      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
         const title = menuMap[n];
         const data = await robustSendPackage(title, n, loggedInUser);
         pushBot(data);
@@ -843,7 +538,6 @@ export default function Page() {
       }
     }
 
-    // ปุ่ม "ดูเซ็ตตัวอื่น"
     if (/^ดูเซ็ตตัวอื่น$/i.test(original)) {
       if (!arMode) {
         pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~');
@@ -857,14 +551,12 @@ export default function Page() {
       return;
     }
 
-    // อยู่ในโหมดรอตัวละคร → ส่งตรงให้ /api
     if (arMode && !readyCalc) {
       const data = await callAPI(original, loggedInUser);
       pushBot(data);
       return;
     }
 
-    // ใช้ NLU (ยืนยัน/ยกเลิก/สลับโหมดเกม)
     const nluRes = await nlu(original);
     if (nluRes.intent === 'confirm') {
       const data = await callAPI('ยืนยัน', loggedInUser);
@@ -899,7 +591,6 @@ export default function Page() {
       return;
     }
 
-    // default
     const data = await callAPI(original, loggedInUser);
     pushBot(data);
   };
@@ -918,21 +609,14 @@ export default function Page() {
       setReadyCalc(null);
       setGearGi({});
       setGearHsr({});
-      const open = await callAPI(
-        arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail',
-        loggedInUser
-      );
+      const open = await callAPI(arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail', loggedInUser);
       pushBot(open);
       return;
     }
 
-    // ถ้าปุ่มเป็นเลขและเรามี mapping -> ส่งชื่อแพ็กเกจ
     if (/^\d+$/.test(value) && (pendingNumberRange || Object.keys(menuMap).length)) {
       const n = parseInt(value, 10);
-      if (
-        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
-        menuMap[n]
-      ) {
+      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
         const title = menuMap[n];
         const data = await robustSendPackage(title, n, loggedInUser);
         pushBot(data);
@@ -1104,6 +788,32 @@ export default function Page() {
               return `• ${s}: ${setS}${mainS}`;
             }).join('\n');
             pushBotMsg(`สรุป Relic ครบ 6 ชิ้นแล้วค่ะ ✨\n${ms}`);
+
+            try {
+              const payload = HSR_SLOTS.map((s) => {
+                const it = next[s as HsrSlot];
+                return {
+                  slot: s,
+                  setName: it?.setName || null,
+                  mainStat: it?.mainStat || null,
+                  substats: it?.substats || [],
+                };
+              });
+              const resp = await fetch('/api/relic/recommend', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items: payload }),
+              });
+              if (resp.ok) {
+                const r = await resp.json();
+                if (r?.reply) pushBotMsg(r.reply);
+                else if (Array.isArray(r?.suggestions) && r.suggestions.length) {
+                  pushBotMsg(`ข้อเสนอจากฐานข้อมูล:\n- ${r.suggestions.join('\n- ')}`);
+                }
+              }
+            } catch {
+              // เงียบ ๆ ถ้าไม่มี endpoint
+            }
           }
         }
       }
@@ -1116,15 +826,15 @@ export default function Page() {
   const currentQR: string[] = confirmMode
     ? ['ยืนยัน', 'ยกเลิก']
     : readyCalc
-    ? ['คำนวณสเตตจากรูป', 'ดูเซ็ตตัวอื่น']
-    : dynamicQR.length
-    ? dynamicQR
-    : defaults.map((q) => q.value);
+      ? ['คำนวณสเตตจากรูป', 'ดูเซ็ตตัวอื่น']
+      : dynamicQR.length
+        ? dynamicQR
+        : defaults.map((q) => q.value);
 
   /* ------------ render ------------ */
   return (
     <div className="min-h-screen bg-[#0f1623] text-gray-100 flex flex-col md:flex-row p-4 gap-4">
-      {/* Login */}
+      {/* Login / Signup card */}
       <div className="w-full md:w-1/4 bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl ring-1 ring-white/10 p-6">
         {isLoggedIn ? (
           <>
@@ -1139,16 +849,11 @@ export default function Page() {
                   setLoggedInUser('');
                   setMessages([{ role: 'bot', text: 'คุณได้ออกจากระบบแล้วค่ะ' }]);
                   setIsOpen(false);
-                  setDynamicQR([]);
-                  setConfirmMode(false);
-                  setShowPaidButton(false);
-                  setPaidSoFar(0);
-                  setArMode(null);
-                  setReadyCalc(null);
-                  setGearGi({});
-                  setGearHsr({});
-                  setPendingNumberRange(null);
-                  setMenuMap({});
+                  setDynamicQR([]); setConfirmMode(false);
+                  setShowPaidButton(false); setPaidSoFar(0);
+                  setArMode(null); setReadyCalc(null);
+                  setGearGi({}); setGearHsr({});
+                  setPendingNumberRange(null); setMenuMap({});
                   setAwaitingUID(false);
                 }}
                 className="px-6"
@@ -1159,43 +864,115 @@ export default function Page() {
           </>
         ) : (
           <>
-            <div className="text-center mb-6">
-              <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
-            </div>
-            <div className="mb-4">
-              <label className="block text-sm mb-2 opacity-80">Username:</label>
-              <input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                placeholder="ใส่ username..."
-              />
-            </div>
-            <div className="mb-6">
-              <label className="block text-sm mb-2 opacity-80">Password:</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                placeholder="ใส่ password..."
-              />
-            </div>
-            <div className="flex justify-center">
-              <GlassPill
-                color="indigo"
-                className="w-full justify-center"
-                onClick={async () => {
-                  // (โปรดักชันสามารถเปลี่ยนกลับไปเรียก /api เพื่อ auth จริง)
-                  setIsLoggedIn(true);
-                  setLoggedInUser(username || 'user');
-                  setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
-                  setIsOpen(true);
-                }}
-              >
-                login
-              </GlassPill>
-            </div>
+            {!isSignup ? (
+              // ------------- LOGIN MODE -------------
+              <>
+                <div className="text-center mb-6">
+                  <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm mb-2 opacity-80">Username:</label>
+                  <input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ใส่ username..."
+                  />
+                </div>
+                <div className="mb-6">
+                  <label className="block text-sm mb-2 opacity-80">Password:</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ใส่ password..."
+                  />
+                </div>
+                <div className="flex justify-center">
+                  <GlassPill
+                    color="indigo"
+                    className="w-full justify-center"
+                    onClick={async () => {
+                      // (โปรดักชัน: เรียก /api/login จริง ๆ ได้)
+                      setIsLoggedIn(true);
+                      setLoggedInUser(username || 'user');
+                      setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
+                      setIsOpen(true);
+                    }}
+                  >
+                    เข้าสู่ระบบ
+                  </GlassPill>
+                </div>
+                {/* ลิงก์ตัวเล็ก ไม่มีกรอบ ใต้ปุ่ม */}
+                <div className="mt-3 text-center">
+                  <button
+                    onClick={() => setIsSignup(true)}
+                    className="text-sm text-indigo-300/90 hover:text-indigo-200 hover:underline focus:outline-none focus:underline"
+                  >
+                    สมัครสมาชิก
+                  </button>
+                </div>
+              </>
+            ) : (
+              // ------------- SIGNUP MODE -------------
+              <>
+                <div className="text-center mb-6">
+                  <p className="text-lg">สมัครสมาชิก</p>
+                </div>
+
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">Username</label>
+                  <input
+                    value={suUsername}
+                    onChange={(e) => setSuUsername(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ตั้ง username"
+                  />
+                </div>
+
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">Password</label>
+                  <input
+                    type="password"
+                    value={suPassword}
+                    onChange={(e) => setSuPassword(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ตั้งรหัสผ่าน"
+                  />
+                </div>
+
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">เบอร์โทร (ไม่บังคับ)</label>
+                  <input
+                    value={suTel}
+                    onChange={(e) => setSuTel(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="0800000000"
+                  />
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-sm mb-2 opacity-80">อีเมล (ไม่บังคับ)</label>
+                  <input
+                    type="email"
+                    value={suEmail}
+                    onChange={(e) => setSuEmail(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="you@example.com"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <GlassPill color="green" className="flex-1 justify-center" onClick={handleSignup}>
+                    สร้างบัญชี
+                  </GlassPill>
+                  <GlassPill color="gray" className="flex-1 justify-center" onClick={() => setIsSignup(false)}>
+                    กลับไปเข้าสู่ระบบ
+                  </GlassPill>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -1335,8 +1112,8 @@ export default function Page() {
                   const label = /^\d+$/.test(value)
                     ? value
                     : dynamicQR.length
-                    ? value
-                    : defaults.find((d) => d.value === value)?.label || value;
+                      ? value
+                      : defaults.find((d) => d.value === value)?.label || value;
                   return (
                     <GlassPill key={`qr-${index}-${value}`} color={color as any} onClick={() => handleQuickReply(value)}>
                       {label}
@@ -1350,7 +1127,7 @@ export default function Page() {
             <div className="p-2 flex items-center gap-2 bg-transparent rounded-b-2xl">
               <input
                 type="text"
-                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 835235056)' : 'พิมพ์เลขเลือกแพ็กเกจได้เลย (เช่น 2) หรือพิมพ์ข้อความ'}
+                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 835235056)' : 'พูดคุยกับแชทบอทของเราได้ตรงนี้เลยจ้า'}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 className="w-full rounded-full px-4 py-2 text-gray-100 bg-white/10 backdrop-blur-md ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
@@ -1363,9 +1140,7 @@ export default function Page() {
           </div>
         )}
 
-        {!isLoggedIn && (
-          <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>
-        )}
+        {!isLoggedIn && <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>}
         {!isOpen && isLoggedIn && (
           <div className="mx-auto mt-2">
             <GlassPill color="indigo" onClick={() => setIsOpen(true)}>
