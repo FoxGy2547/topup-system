@@ -217,16 +217,225 @@ function GlassPill({
   );
 }
 
-/** บับเบิลข้อความแบบ glass ของ Ruby (ไม่ลอย/ไม่ซ้ำ Ruby:) */
-function BotText({ text }: { text: string }) {
-  const tidy = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
-  const lines = (text || '').split(/\r?\n/).map(tidy);
+/* ====================== Artifact/Relic formatter ====================== */
+/** โหลด mapping ชื่อเต็ม (มีใน DB ก็ชี้ endpoint ได้; ถ้าไม่มีจะ fallback เป็นตัวย่อเดิม) */
+async function fetchSetMap(game: GameKey) {
+  try {
+    const r = await fetch(`/api/sets-map?game=${game}`);
+    const j = await r.json();
+    if (j?.ok && j.map) return j.map as Record<string, string>;
+  } catch {}
+  return {};
+}
+
+function normalizeShortId(raw: string) {
+  return (raw || '')
+    .replace(/\u200b/g, '')
+    .replace(/[’‘']/g, '')
+    .replace(/[–—]/g, '-')
+    .replace(/\s+/g, '')
+    .toUpperCase();
+}
+
+const ICON_ALIASES: Record<string, string> = {
+  // ตัวอย่าง alias ที่ไฟล์ภาพตั้งชื่อไม่ตรงตัวย่อ
+  // เติมได้ตามต้องการ เช่น 'GOBS' => 'GoB'
+};
+
+function getSetIconFileName(shortId: string) {
+  const key = normalizeShortId(shortId);
+  return ICON_ALIASES[key] || shortId; // ถ้าไม่มี alias ก็ใช้ตามเดิม
+}
+function getSetIconPath(game: GameKey | null | undefined, shortId: string) {
+  if (!shortId) return null;
+  const folder = game === 'hsr' ? 'hsr' : 'gi';
+  return `/pic/${folder}/${getSetIconFileName(shortId)}.png`;
+}
+function fullSetName(shortOrName: string, map: Record<string, string>) {
+  const k = normalizeShortId(shortOrName);
+  // พยายามหาแบบตรงตัวก่อน เผื่อ map เก็บคีย์แบบเดิม
+  return map[shortOrName] || map[k] || shortOrName;
+}
+
+function SetChip({
+  game, shortId, pieces, map,
+}: {
+  game: GameKey | null | undefined;
+  shortId: string;
+  pieces?: number;
+  map: Record<string, string>;
+}) {
+  const icon = getSetIconPath(game, shortId);
+  const name = fullSetName(shortId, map);
+  return (
+    <div className="flex items-center gap-2 whitespace-nowrap">
+      {icon && (
+        <Image
+          src={icon}
+          alt={name}
+          width={28}
+          height={28}
+          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
+          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+        />
+      )}
+      <span className="text-gray-100">
+        {name}{typeof pieces === 'number' ? ` ${pieces} ชิ้น` : ''}
+      </span>
+    </div>
+  );
+}
+
+/** แถวแบบ HSR: Cavern Relic – Planar Ornament (เช่น "GoBS-SSS") */
+function HsrPairRow({
+  combo, map, piecesText,
+}: {
+  combo: string;                 // เช่น 'GoBS-SSS'
+  map: Record<string, string>;
+  piecesText?: string;           // เช่น '4+2 ชิ้น' (optional)
+}) {
+  const [relicRaw, planarRaw] = combo.split('-').map(s => s.trim());
+  const relicIcon = getSetIconPath('hsr', relicRaw);
+  const planarIcon = getSetIconPath('hsr', planarRaw);
+  const relicName = fullSetName(relicRaw, map);
+  const planarName = fullSetName(planarRaw, map);
+
+  return (
+    <div className="flex items-center gap-3 whitespace-nowrap">
+      {relicIcon && (
+        <Image
+          src={relicIcon}
+          alt={relicName}
+          width={28}
+          height={28}
+          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
+          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+        />
+      )}
+      {planarIcon && (
+        <Image
+          src={planarIcon}
+          alt={planarName}
+          width={28}
+          height={28}
+          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
+          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+        />
+      )}
+      <span className="text-gray-100">
+        {relicName} + {planarName}{piecesText ? ` ${piecesText}` : ''}
+      </span>
+    </div>
+  );
+}
+
+/** แปลงข้อความคำแนะนำ Artifact/Relic ให้กลายเป็น JSX พร้อมไอคอน */
+function formatAdviceWithIcons(
+  game: GameKey | null | undefined,
+  rawText: string,
+  giMap: Record<string, string>,
+  hsrMap: Record<string, string>
+) {
+  const map = game === 'hsr' ? hsrMap : giMap;
+  const lines = splitlines(rawText);
+
+  // หา index หลังคำว่า "คือ:" เพื่อเริ่ม parse รายการ
+  let startIdx = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (/คือ\s*:?$/i.test(lines[i])) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+
+  const items = lines.slice(startIdx);
+  if (!items.length) return null;
+
+  const nodes: React.ReactNode[] = [];
+  for (const ln of items) {
+    const line = ln.replace(/^\s*[-•]\s*/, '').trim();
+    if (!line) continue;
+
+    // แยก "หรือ"
+    const parts = line.split(/\s+หรือ\s+/i);
+    const row: React.ReactNode[] = [];
+
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i].trim();
+
+      // HSR: "Relic-Planar 4 ชิ้น" หรือไม่มีจำนวน
+      if (game === 'hsr') {
+        const mCombo = p.match(/^([A-Za-z0-9\-]+)\s*(?:(\d+)\s*ชิ้น)?$/);
+        if (mCombo) {
+          const token = mCombo[1];
+          const hasDash = token.includes('-');
+          const pieces = mCombo[2] ? parseInt(mCombo[2], 10) : undefined;
+
+          if (hasDash) {
+            const piecesText = pieces ? '4+2 ชิ้น' : undefined;
+            row.push(<HsrPairRow key={`pair-${token}-${i}`} combo={token} map={map} piecesText={piecesText} />);
+            continue;
+          }
+        }
+      }
+
+      // ปกติ (GI และ HSR เดี่ยว): "XXX 4 ชิ้น"
+      const m = p.match(/^([A-Za-z0-9\-]+)\s+(\d+)\s*ชิ้น$/);
+      if (m) {
+        const shortId = m[1];
+        const pieces = parseInt(m[2], 10);
+        row.push(<SetChip key={`${shortId}-${i}`} game={game} shortId={shortId} pieces={pieces} map={map} />);
+      } else {
+        // ไม่ตรง pattern => โชว์ข้อความเดิม
+        row.push(<span key={`raw-${i}`}>{p}</span>);
+      }
+    }
+
+    nodes.push(
+      <div key={ln} className="flex flex-col gap-2 mt-1">
+        {row.map((r, idx) => (
+          <div key={idx} className="flex items-center gap-3">{r}</div>
+        ))}
+      </div>
+    );
+  }
+
+  return nodes;
+}
+
+/** ตรวจว่าเป็นข้อความคำแนะนำ Artifact/Relic ไหม + ให้ค่า game */
+function detectAdviceGame(text: string): GameKey | null {
+  if (/^\s*artifact\s+ที่เหมาะกับ/i.test(text)) return 'gi';
+  if (/^\s*relic\s+ที่เหมาะกับ/i.test(text)) return 'hsr';
+  if (/^\s*ruby\s*:\s*artifact\s+ที่เหมาะกับ/i.test(text)) return 'gi';
+  if (/^\s*ruby\s*:\s*relic\s+ที่เหมาะกับ/i.test(text)) return 'hsr';
+  return null;
+}
+
+/** บับเบิลข้อความแบบ glass ของ Ruby (แบบปรับปรุง: รองรับการแสดงเซ็ต + ไอคอน) */
+function BotText({
+  text,
+  giMap,
+  hsrMap,
+}: {
+  text: string;
+  giMap: Record<string, string>;
+  hsrMap: Record<string, string>;
+}) {
+  const tidyHead = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
+  const lines = (text || '').split(/\r?\n/);
+  const head = tidyHead(lines[0] || '');
+  const game = detectAdviceGame(head);
+
+  const bodyText = text;
+
+  const adviceNodes = game ? formatAdviceWithIcons(game, bodyText, giMap, hsrMap) : null;
 
   return (
     <div className="inline-block max-w-[44rem]">
       <div
         className={[
-          'relative px-4 py-2 rounded-2xl  text-[0.98rem] leading-relaxed whitespace-pre-wrap break-words',
+          'relative px-4 py-2 rounded-2xl text-[0.98rem] leading-relaxed whitespace-pre-wrap break-words',
           'bg-white/8 backdrop-blur-md ring-3 ring-white/15',
           'shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_28px_rgba(0,0,0,.35)]',
           'before:absolute before:-top-0.5 before:left-3 before:right-3 before:h-[2px] before:rounded-full before:bg-white/60 before:opacity-70 before:blur-[1px]',
@@ -235,14 +444,20 @@ function BotText({ text }: { text: string }) {
         <div className="mb-1 flex items-baseline gap-1">
           <span className="text-pink-300 font-semibold">Ruby</span>
           <span className="text-gray-300">:</span>
-          <span className="text-gray-100">{lines[0]}</span>
+          <span className="text-gray-100">{tidyHead(lines[0] || '')}</span>
         </div>
-        {lines.length > 1 && (
-          <div className="space-y-1 text-gray-100">
-            {lines.slice(1).map((ln, i) => (
-              <div key={i}>{ln}</div>
-            ))}
-          </div>
+
+        {/* ถ้าเป็นบล็อกคำแนะนำ Artifact/Relic ให้ render แบบมีไอคอน */}
+        {adviceNodes ? (
+          <div className="space-y-1 text-gray-100">{adviceNodes}</div>
+        ) : (
+          lines.length > 1 && (
+            <div className="space-y-1 text-gray-100">
+              {lines.slice(1).map((ln, i) => (
+                <div key={i}>{ln}</div>
+              ))}
+            </div>
+          )
         )}
       </div>
     </div>
@@ -304,6 +519,17 @@ export default function Page() {
       if (j?.ok) setBalance(Number(j.balance) || 0);
     } catch {}
   };
+
+  /* ------------ set name maps (สำหรับไอคอน/ชื่อเต็ม) ------------ */
+  const [giMap, setGiMap] = useState<Record<string, string>>({});
+  const [hsrMap, setHsrMap] = useState<Record<string, string>>({});
+  useEffect(() => {
+    (async () => {
+      const [a, b] = await Promise.all([fetchSetMap('gi'), fetchSetMap('hsr')]);
+      setGiMap(a || {});
+      setHsrMap(b || {});
+    })();
+  }, []);
 
   /* ------------ chat ------------ */
   const [isOpen, setIsOpen] = useState(true);
@@ -518,7 +744,6 @@ export default function Page() {
       const remain = Math.max(0, Number((expected - use).toFixed(2)));
 
       if (use > 0) {
-        // ใช้ endpoint ที่ให้มา: /api/user/update-balance (amount บวก/ลบได้)
         const r = await fetch('/api/user/update-balance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1002,7 +1227,7 @@ export default function Page() {
                   ) : (
                     <div className="flex justify-start">
                       <div className="max-w-[85%]">
-                        <BotText text={msg.text} />
+                        <BotText text={msg.text} giMap={giMap} hsrMap={hsrMap} />
                         {msg.imageUrl && (
                           <Image
                             src={msg.imageUrl}
