@@ -217,17 +217,11 @@ function GlassPill({
   );
 }
 
-/* ====================== Artifact/Relic formatter ====================== */
-/** โหลด mapping ชื่อเต็ม (มีใน DB ก็ชี้ endpoint ได้; ถ้าไม่มีจะ fallback เป็นตัวย่อเดิม) */
 async function fetchSetMap(game: GameKey) {
-  try {
-    const r = await fetch(`/api/sets-map?game=${game}`);
-    const j = await r.json();
-    if (j?.ok && j.map) return j.map as Record<string, string>;
-  } catch {}
-  return {};
+  return {}; // ไม่ดึงจาก /api/sets-map แล้ว
 }
 
+/* ===== Icon + Name helpers (อัปเดตใหม่) ===== */
 function normalizeShortId(raw: string) {
   return (raw || '')
     .replace(/\u200b/g, '')
@@ -236,37 +230,106 @@ function normalizeShortId(raw: string) {
     .replace(/\s+/g, '')
     .toUpperCase();
 }
+function normalizeFullName(raw: string) {
+  return (raw || '')
+    .replace(/\u200b/g, '')
+    .replace(/[’‘’]/g, "'")
+    .replace(/[–—]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
 
-const ICON_ALIASES: Record<string, string> = {
-  // ตัวอย่าง alias ที่ไฟล์ภาพตั้งชื่อไม่ตรงตัวย่อ
-  // เติมได้ตามต้องการ เช่น 'GOBS' => 'GoB'
+// GI: ชื่อเต็ม <-> ย่อ (เพิ่มได้ตามไฟล์จริงใน /public/pic/gi)
+const SHORT_TO_FULL_GI: Record<string, string> = {
+  GT: 'Golden Troupe',
+  MH: 'Marechaussee Hunter',
+};
+const NAME_TO_SHORT_GI: Record<string, string> = {
+  'GOLDEN TROUPE': 'GT',
+  'MARECHAUSSEE HUNTER': 'MH',
 };
 
-function getSetIconFileName(shortId: string) {
-  const key = normalizeShortId(shortId);
-  return ICON_ALIASES[key] || shortId; // ถ้าไม่มี alias ก็ใช้ตามเดิม
+// HSR: ชื่อเต็ม <-> ย่อ (เพิ่มได้ตามไฟล์จริงใน /public/pic/hsr)
+const SHORT_TO_FULL_HSR: Record<string, string> = {
+  PIDC: 'Pioneer Diver of Dead Waters',
+  SSS: 'Space Sealing Station',
+  // เพิ่มได้ตามรูปในโปรเจกต์:
+  // MUSK: 'Musketeer of Wild Wheat',
+  // HUNT: 'Hunter of Glacial Forest',
+};
+const NAME_TO_SHORT_HSR: Record<string, string> = {
+  'PIONEER DIVER OF DEAD WATERS': 'PIDC',
+  'SPACE SEALING STATION': 'SSS',
+  // 'MUSKETEER OF WILD WHEAT': 'MUSK',
+  // 'HUNTER OF GLACIAL FOREST': 'HUNT',
+};
+
+// คืน short_id จาก "ชื่อเต็มหรือย่อ"
+function pickShortId(game: GameKey | null | undefined, shortOrName: string, map: Record<string, string>) {
+  const raw = (shortOrName || '').trim();
+  const normShort = normalizeShortId(raw);
+  const normFull = normalizeFullName(raw);
+
+  // 1) ลองใช้ map ภายนอก (ถ้ามี)
+  if (map[raw]) return map[raw];
+  if (map[normFull]) return map[normFull];
+  if (map[normShort]) return map[normShort];
+
+  // 2) ใช้แมพในไฟล์นี้
+  if (game === 'gi') {
+    if (NAME_TO_SHORT_GI[normFull]) return NAME_TO_SHORT_GI[normFull];
+    if (SHORT_TO_FULL_GI[normShort]) return normShort;
+  } else {
+    if (NAME_TO_SHORT_HSR[normFull]) return NAME_TO_SHORT_HSR[normFull];
+    if (SHORT_TO_FULL_HSR[normShort]) return normShort;
+  }
+
+  // 3) ถ้าไม่มีช่องว่าง (= น่าจะเป็นย่อแล้ว) ก็คืนไปเลย
+  if (!/\s/.test(raw)) return normShort;
+
+  // 4) ไม่รู้จัก
+  return '';
 }
-function getSetIconPath(game: GameKey | null | undefined, shortId: string) {
-  if (!shortId) return null;
+
+// คืนชื่อเต็มไว้โชว์
+function pickFullName(game: GameKey | null | undefined, shortOrName: string, map: Record<string, string>) {
+  const raw = (shortOrName || '').trim();
+  // ถ้า map ภายนอกมีชื่อเต็มให้ ก็ใช้เลย
+  if (map[raw]) return map[raw];
+  if (map[normalizeFullName(raw)]) return map[normalizeFullName(raw)];
+  if (map[normalizeShortId(raw)]) return map[normalizeShortId(raw)] as any;
+
+  // ใช้แมพในไฟล์นี้
+  const shortId = pickShortId(game, raw, {});
+  if (shortId) {
+    if (game === 'gi' && SHORT_TO_FULL_GI[shortId]) return SHORT_TO_FULL_GI[shortId];
+    if (game === 'hsr' && SHORT_TO_FULL_HSR[shortId]) return SHORT_TO_FULL_HSR[shortId];
+  }
+  // ไม่แมพได้ ก็คืนค่าดิบ (อาจเป็นชื่อเต็มอยู่แล้ว)
+  return raw;
+}
+
+function getSetIconPath(game: GameKey | null | undefined, shortIdOrName: string, map: Record<string, string>) {
+  if (!shortIdOrName) return null;
+  const key = pickShortId(game, shortIdOrName, map);
+  if (!key) return null;
   const folder = game === 'hsr' ? 'hsr' : 'gi';
-  return `/pic/${folder}/${getSetIconFileName(shortId)}.png`;
+  return `/pic/${folder}/${key.toUpperCase()}.png`;
 }
-function fullSetName(shortOrName: string, map: Record<string, string>) {
-  const k = normalizeShortId(shortOrName);
-  // พยายามหาแบบตรงตัวก่อน เผื่อ map เก็บคีย์แบบเดิม
-  return map[shortOrName] || map[k] || shortOrName;
-}
+
+/* ====================== Chips/Rows ====================== */
 
 function SetChip({
   game, shortId, pieces, map,
 }: {
   game: GameKey | null | undefined;
-  shortId: string;
+  shortId: string; // อาจเป็นชื่อเต็ม/ย่อ
   pieces?: number;
   map: Record<string, string>;
 }) {
-  const icon = getSetIconPath(game, shortId);
-  const name = fullSetName(shortId, map);
+  const icon = getSetIconPath(game, shortId, map);
+  const name = pickFullName(game, shortId, map); // ✅ ชื่อเต็ม
   return (
     <div className="flex items-center gap-2 whitespace-nowrap">
       {icon && (
@@ -286,45 +349,57 @@ function SetChip({
   );
 }
 
-/** แถวแบบ HSR: Cavern Relic – Planar Ornament (เช่น "GoBS-SSS") */
+// แถวแบบ HSR: แสดง 2 เซ็ตเคียงกัน (ไอคอน+ชื่อ) แล้วคั่นด้วย "+"
 function HsrPairRow({
-  combo, map, piecesText,
+  left, right, map, piecesText,
 }: {
-  combo: string;                 // เช่น 'GoBS-SSS'
+  left: string;
+  right: string;
   map: Record<string, string>;
-  piecesText?: string;           // เช่น '4+2 ชิ้น' (optional)
+  piecesText?: string; // เช่น "4+2 ชิ้น"
 }) {
-  const [relicRaw, planarRaw] = combo.split('-').map(s => s.trim());
-  const relicIcon = getSetIconPath('hsr', relicRaw);
-  const planarIcon = getSetIconPath('hsr', planarRaw);
-  const relicName = fullSetName(relicRaw, map);
-  const planarName = fullSetName(planarRaw, map);
+  const leftIcon = getSetIconPath('hsr', left, map);
+  const rightIcon = getSetIconPath('hsr', right, map);
+  const leftName = pickFullName('hsr', left, map);
+  const rightName = pickFullName('hsr', right, map);
 
   return (
-    <div className="flex items-center gap-3 whitespace-nowrap">
-      {relicIcon && (
-        <Image
-          src={relicIcon}
-          alt={relicName}
-          width={28}
-          height={28}
-          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
-          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-        />
+    <div className="flex items-center gap-2 flex-wrap">
+      {/* ซ้าย */}
+      {leftIcon && (
+        <div className="flex items-center gap-2">
+          <Image
+            src={leftIcon}
+            alt={leftName}
+            width={28}
+            height={28}
+            className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
+            onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+          />
+          <span className="text-gray-100">{leftName}</span>
+        </div>
       )}
-      {planarIcon && (
-        <Image
-          src={planarIcon}
-          alt={planarName}
-          width={28}
-          height={28}
-          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
-          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-        />
+
+      {/* เครื่องหมาย + */}
+      <span className="px-1 text-gray-300">+</span>
+
+      {/* ขวา */}
+      {rightIcon && (
+        <div className="flex items-center gap-2">
+          <Image
+            src={rightIcon}
+            alt={rightName}
+            width={28}
+            height={28}
+            className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
+            onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+          />
+          <span className="text-gray-100">{rightName}</span>
+        </div>
       )}
-      <span className="text-gray-100">
-        {relicName} + {planarName}{piecesText ? ` ${piecesText}` : ''}
-      </span>
+
+      {/* จำนวนชิ้น (ถ้ามี) */}
+      {piecesText && <span className="ml-2 text-gray-300">{piecesText}</span>}
     </div>
   );
 }
@@ -363,24 +438,33 @@ function formatAdviceWithIcons(
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i].trim();
 
-      // HSR: "Relic-Planar 4 ชิ้น" หรือไม่มีจำนวน
+      // ---------- HSR โหมดคู่ ----------
       if (game === 'hsr') {
-        const mCombo = p.match(/^([A-Za-z0-9\-]+)\s*(?:(\d+)\s*ชิ้น)?$/);
-        if (mCombo) {
-          const token = mCombo[1];
-          const hasDash = token.includes('-');
-          const pieces = mCombo[2] ? parseInt(mCombo[2], 10) : undefined;
+        // รูปแบบ "AAA + BBB (2/4/6 ชิ้น)" หรือ "AAA-BBB 6 ชิ้น"
+        const mPlus = p.match(/^(.+?)\s*\+\s*(.+?)(?:\s+(\d+)\s*ชิ้น)?$/);
+        const mDash = p.match(/^(.+?)\s*-\s*(.+?)(?:\s+(\d+)\s*ชิ้น)?$/);
+        if (mPlus || mDash) {
+          const mm = (mPlus || mDash)!;
+          const left = mm[1].trim();
+          const right = mm[2].trim();
+          const pieces = mm[3] ? parseInt(mm[3], 10) : undefined;
+          const piecesText = pieces ? '4+2 ชิ้น' : undefined;
+          row.push(<HsrPairRow key={`pair-${left}-${right}-${i}`} left={left} right={right} map={map} piecesText={piecesText} />);
+          continue;
+        }
 
-          if (hasDash) {
-            const piecesText = pieces ? '4+2 ชิ้น' : undefined;
-            row.push(<HsrPairRow key={`pair-${token}-${i}`} combo={token} map={map} piecesText={piecesText} />);
-            continue;
-          }
+        // เดี่ยว: "XXX 2 ชิ้น" หรือ "ชื่อเต็ม 4 ชิ้น"
+        const mSingleHSR = p.match(/^(.+?)\s+(\d+)\s*ชิ้น$/);
+        if (mSingleHSR) {
+          const token = mSingleHSR[1];
+          const pieces = parseInt(mSingleHSR[2], 10);
+          row.push(<SetChip key={`${token}-${i}`} game={game} shortId={token} pieces={pieces} map={map} />);
+          continue;
         }
       }
 
-      // ปกติ (GI และ HSR เดี่ยว): "XXX 4 ชิ้น"
-      const m = p.match(/^([A-Za-z0-9\-]+)\s+(\d+)\s*ชิ้น$/);
+      // ---------- ปกติ (GI และ HSR เดี่ยว) ----------
+      const m = p.match(/^(.+?)\s+(\d+)\s*ชิ้น$/);  // ยอมรับชื่อเต็มที่มีช่องว่าง
       if (m) {
         const shortId = m[1];
         const pieces = parseInt(m[2], 10);
