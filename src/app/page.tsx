@@ -1219,7 +1219,7 @@ export default function Page() {
                   setAwaitingUID(false);
                 }}
               >
-                logout
+                ออกจากระบบ
               </GlassPill>
             </div>
           </>
