@@ -1,4 +1,4 @@
-// /src/lib/gi-sync.ts
+// src/lib/gi-sync.ts
 import { getPool } from '@/lib/db';
 
 async function loadCheerio() {
@@ -7,19 +7,45 @@ async function loadCheerio() {
 }
 
 const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) NinoSync/1.1 Chrome/120 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) NinoSync/1.2 Chrome/120 Safari/537.36';
 
-const FANDOM_LIST = 'https://genshin-impact.fandom.com/wiki/Character/List';
-const FANDOM_COMP = 'https://genshin-impact.fandom.com/wiki/Character/Comparison';
+const FANDOM_API = 'https://genshin-impact.fandom.com/api.php';
 const GGG_BASE = 'https://genshin.gg';
 const GGG_BUILDS = `${GGG_BASE}/builds/`;
 
 function esc(s: string) { return s.replace(/'/g, "''"); }
+
+// ------------ helpers ------------
 async function fetchHtml(url: string) {
-  const res = await fetch(url, { headers: { 'user-agent': UA, 'cache-control': 'no-cache' } });
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': UA,
+      'cache-control': 'no-cache',
+      'accept-language': 'en-US,en;q=0.9',
+    },
+  });
   if (!res.ok) throw new Error(`Fetch failed ${res.status} ${url}`);
   return await res.text();
 }
+
+// ดึง HTML ผ่าน MediaWiki API (เสถียรกว่า)
+async function fetchFandomHtmlByApi(page: string) {
+  const url =
+    `${FANDOM_API}?action=parse&page=${encodeURIComponent(page)}&prop=text&formatversion=2&format=json`;
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': UA,
+      'accept': 'application/json',
+      'cache-control': 'no-cache',
+    },
+  });
+  if (!res.ok) throw new Error(`Fandom API ${res.status} for ${page}`);
+  const j = await res.json();
+  const html: string = j?.parse?.text || '';
+  if (!html) throw new Error(`Fandom API returned empty HTML for ${page}`);
+  return html;
+}
+
 function parseNum(txt: string) {
   const t = txt.replace(/[, ]/g, '').replace(/%/g, '');
   const n = Number(t);
@@ -30,7 +56,7 @@ function normKey(s: string) {
     .replace(/[’'`]/g, '').replace(/[()]/g, '').replace(/\s+/g, '');
 }
 
-// short_id: แยกด้วย “ช่องว่างเท่านั้น” (hyphen = คำเดียว)
+// short_id: แยกด้วย "ช่องว่าง" เท่านั้น (hyphen ไม่แยก)
 function shortIdBySpaces(name: string) {
   const words = name.replace(/\s+/g, ' ').trim()
     .split(' ')
@@ -39,8 +65,7 @@ function shortIdBySpaces(name: string) {
   return words.map(w => (/^of$/i.test(w) ? 'o' : w[0].toUpperCase())).join('');
 }
 
-/* ========================= Fandom: Base Stats ========================= */
-
+// ------------ Fandom: Base Stats ------------
 type BaseRow = {
   name: string; key: string; hp: number; atk: number; def: number;
   ascStat?: string; ascValue?: number;
@@ -65,24 +90,23 @@ function ascToCols(stat?: string, val?: number) {
   return z;
 }
 
-// ✅ เจาะ section “Playable Characters” ชัด ๆ แล้วอ่าน table ถัดมา
-async function fandomPlayableNames(): Promise<string[]> {
-  const html = await fetchHtml(FANDOM_LIST);
+// รายชื่อตัวเล่นได้ จากหัวข้อ Playable Characters ในหน้า List (ผ่าน API)
+export async function fandomPlayableNames(): Promise<string[]> {
+  const html = await fetchFandomHtmlByApi('Character/List');
   const { load } = await loadCheerio();
   const $ = load(html);
   const names = new Set<string>();
 
-  // หา heading ที่เขียนว่า "Playable Characters"
-  const h = $('span.mw-headline, h2, h3').filter((_, el) =>
-    /playable characters/i.test($(el).text())
-  ).first();
-
-  let table = h.length ? h.closest('h2,h3').nextAll('table').first() : $('table.article-table').first();
-  if (!table.length) table = $('table').first();
+  const playableHeader = $('h2, h3')
+    .filter((_, el) => /playable characters/i.test($(el).text()))
+    .first();
+  const table = playableHeader.length
+    ? playableHeader.nextAll('table').first()
+    : $('table').first();
 
   table.find('tbody tr').each((_, tr) => {
-    const link = $(tr).find('a[href*="/wiki/"]').first();
-    const name = (link.text() || '').trim();
+    const a = $(tr).find('td a[href^="/wiki/"]').first();
+    const name = (a.text() || '').trim();
     if (!name) return;
     if (!/^[A-Za-z]/.test(name)) return;
     names.add(name);
@@ -91,9 +115,9 @@ async function fandomPlayableNames(): Promise<string[]> {
   return Array.from(names);
 }
 
-// ✅ เล็งตารางที่มีหัว “Base Stats (Lv. 90)” + คอลัมน์ Asc Stat/Value
-async function fandomComparisonRows(): Promise<BaseRow[]> {
-  const html = await fetchHtml(FANDOM_COMP);
+// ตาราง Base Stats (Lv.90) + Ascension Stat/Value จาก Character/Comparison (ผ่าน API)
+export async function fandomComparisonRows(): Promise<BaseRow[]> {
+  const html = await fetchFandomHtmlByApi('Character/Comparison');
   const { load } = await loadCheerio();
   const $ = load(html);
 
@@ -101,8 +125,6 @@ async function fandomComparisonRows(): Promise<BaseRow[]> {
 
   $('table').each((_, tbl) => {
     const $tbl = $(tbl);
-    const caption = $tbl.prev('h2,h3').text().toLowerCase();
-    const looksRight = /base stats|lv\.?\s*90/i.test(caption);
     const headers = $tbl.find('th').map((__, th) => $(th).text().trim().toLowerCase()).get();
 
     const idxName = headers.findIndex(h => /name|character/.test(h));
@@ -112,24 +134,26 @@ async function fandomComparisonRows(): Promise<BaseRow[]> {
     const idxAS   = headers.findIndex(h => /ascension stat/.test(h));
     const idxAV   = headers.findIndex(h => /ascension value/.test(h));
 
-    if (!looksRight && [idxAS, idxAV].some(i => i === -1)) return;
+    // ต้องมีอย่างน้อย name/hp/atk/def
     if ([idxName, idxHP, idxATK, idxDEF].some(i => i === -1)) return;
 
     $tbl.find('tbody tr').each((__, tr) => {
       const cols = $(tr).find('td,th').map((___, td) => $(td).text().trim()).get();
       const name = (cols[idxName] || '').replace(/\s+/g, ' ').trim();
       if (!name) return;
-      const hp = parseNum(cols[idxHP] || '0');
+      const hp  = parseNum(cols[idxHP]  || '0');
       const atk = parseNum(cols[idxATK] || '0');
       const def = parseNum(cols[idxDEF] || '0');
       if (hp <= 0 || atk <= 0 || def <= 0) return;
-      const ascStat = idxAS >= 0 ? (cols[idxAS] || '').trim() || undefined : undefined;
+
+      const ascStat  = idxAS >= 0 ? (cols[idxAS] || '').trim() || undefined : undefined;
       const ascValue = idxAV >= 0 ? (parseNum(cols[idxAV] || '0') || undefined) : undefined;
 
       out.push({ name, key: normKey(name), hp, atk, def, ascStat, ascValue });
     });
   });
 
+  // dedupe
   const map = new Map<string, BaseRow>();
   out.forEach(r => map.set(r.key, r));
   return Array.from(map.values());
@@ -170,9 +194,8 @@ ON DUPLICATE KEY UPDATE
   }
 }
 
-/* ========================= genshin.gg: Best Artifacts ========================= */
-
-async function gggCharacterLinks(): Promise<{ name: string; url: string }[]> {
+// ------------ genshin.gg: Best Artifacts ------------
+export async function gggCharacterLinks(): Promise<{ name: string; url: string }[]> {
   const { load } = await loadCheerio();
   const html = await fetchHtml(GGG_BUILDS);
   const $ = load(html);
@@ -187,7 +210,7 @@ async function gggCharacterLinks(): Promise<{ name: string; url: string }[]> {
   return Array.from(map.values());
 }
 
-async function gggBestArtifacts(url: string): Promise<string[]> {
+export async function gggBestArtifacts(url: string): Promise<string[]> {
   const { load } = await loadCheerio();
   const html = await fetchHtml(url);
   const $ = load(html);
@@ -198,6 +221,7 @@ async function gggBestArtifacts(url: string): Promise<string[]> {
   let section = header.parent();
   if (!section.length) section = header.next();
 
+  // เก็บทั้ง 4 ชิ้นเดี่ยว และ 2+2
   section.find('*').each((_, el) => {
     const txt = $(el).text().replace(/\s+/g, ' ').trim();
     if (!/(2|4)\b/.test(txt)) return;
@@ -261,8 +285,7 @@ ON DUPLICATE KEY UPDATE set_short=VALUES(set_short);`.trim();
   await pool.query(sql);
 }
 
-/* ========================= Public API ========================= */
-
+// ------------ Public API ------------
 export async function syncGiBaseStats() {
   const list = await fandomPlayableNames();
   const comp = await fandomComparisonRows();
