@@ -1,18 +1,22 @@
-// /src/app/page.tsx
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import Tesseract from 'tesseract.js';
 
-// OCR เกียร์ (ถ้าใช้ฟีเจอร์นี้อยู่)
 import { ocrGear, GearItem, GiSlot, HsrSlot, GameKey } from '@/lib/gear-ocr';
-import { useBalance } from '@/hooks/useBalance';
 
 /* ====================== Types ====================== */
 type QuickReply = { label: string; value: string };
-type ApiResponse = { reply?: string; quickReplies?: string[]; paymentRequest?: any };
-
+type ApiResponse = {
+  reply?: string;
+  quickReplies?: string[];
+  paymentRequest?: any;
+  sets?: {
+    game: GameKey;
+    lines: { short: string; full: string; pieces: number }[][];
+  };
+};
 type NluResp =
   | { intent: 'artifact_gi'; character?: string }
   | { intent: 'relic_hsr'; character?: string }
@@ -20,8 +24,18 @@ type NluResp =
   | { intent: 'cancel' }
   | { intent: 'unknown' };
 
-/* ====================== Utils (normalize) ====================== */
+type ChatMessage = {
+  role: 'user' | 'bot' | 'preview';
+  text: string;
+  imageUrl?: string;
+  // ✅ โครงสร้างชุดเซ็ตจาก backend (ใช้เรนเดอร์รูป + ชื่อเต็ม)
+  sets?: {
+    game: GameKey;
+    lines: { short: string; full: string; pieces: number }[][];
+  };
+};
 
+/* ====================== Utils ====================== */
 const THAI_DIGITS = '๐๑๒๓๔๕๖๗๘๙';
 const toArabic = (s: string) =>
   [...(s || '')]
@@ -31,7 +45,6 @@ const toArabic = (s: string) =>
     })
     .join('');
 
-// splitlines แบบรักษา newline + ทำความสะอาดเบื้องต้น
 const splitlines = (s: string) =>
   toArabic(s)
     .replace(/\u200b/g, '')
@@ -44,12 +57,10 @@ const splitlines = (s: string) =>
     .filter(Boolean);
 
 /* ====================== Slots ====================== */
-
 const GI_SLOTS = ['Flower', 'Plume', 'Sands', 'Goblet', 'Circlet'] as const;
 const HSR_SLOTS = ['Head', 'Hands', 'Body', 'Feet', 'Planar Sphere', 'Link Rope'] as const;
 
 /* ====================== API helpers ====================== */
-
 async function callAPI(userMessage: string, username?: string): Promise<ApiResponse> {
   const res = await fetch('/api', {
     method: 'POST',
@@ -58,7 +69,6 @@ async function callAPI(userMessage: string, username?: string): Promise<ApiRespo
   });
   return res.json();
 }
-
 async function nlu(text: string): Promise<NluResp> {
   try {
     const r = await fetch('/api/nlu', {
@@ -73,23 +83,10 @@ async function nlu(text: string): Promise<NluResp> {
 }
 
 /* ====================== OCR: Slip ====================== */
-
-// --- helpers for slip amount extraction ---
 const AMT_KEY_POS = [
-  'ยอดชำระ',
-  'ยอดสุทธิ',
-  'ยอดรวม',
-  'รวมทั้งสิ้น',
-  'สุทธิ',
-  'จำนวนเงิน',
-  'จำนวน',
-  'รวม',
-  'total',
-  'amount',
-  'paid',
-  'payment',
+  'ยอดชำระ','ยอดสุทธิ','ยอดรวม','รวมทั้งสิ้น','สุทธิ','จำนวนเงิน','จำนวน','รวม','total','amount','paid','payment',
 ];
-const CURRENCY_HINT = ['บาท', 'บาทถ้วน', 'thb', '฿'];
+const CURRENCY_HINT = ['บาท','บาทถ้วน','thb','฿'];
 
 function cleanSlipText(s: string) {
   return toArabic(s || '')
@@ -101,16 +98,11 @@ function cleanSlipText(s: string) {
     .replace(/\s+/g, ' ')
     .trim();
 }
-
 function parseAmountCandidates(lines: string[]) {
-  const NUM =
-    /(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/g;
-
+  const NUM = /(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/g;
   type Cand = { value: number; raw: string; line: string; score: number };
   const out: Cand[] = [];
-
   const hasAny = (hay: string, arr: string[]) => arr.some((k) => new RegExp(`\\b${k}\\b`, 'i').test(hay));
-
   for (const line0 of lines) {
     const line = line0.toLowerCase();
     let m: RegExpExecArray | null;
@@ -118,51 +110,39 @@ function parseAmountCandidates(lines: string[]) {
       const raw = m[1];
       const v = parseFloat(raw.replace(/[, ]/g, ''));
       if (!isFinite(v)) continue;
-
       let score = 0;
       if (hasAny(line, AMT_KEY_POS)) score += 6;
       if (hasAny(line, CURRENCY_HINT)) score += 4;
       if (/\bfee|ค่าธรรมเนียม|charge/i.test(line)) score -= 5;
       if (/\btime|เวลา|วันที่|reference|ref\.?|เลขที่|เบอร์|บัญชี/i.test(line)) score -= 4;
-
       if (/\.\d{2}\b/.test(raw)) score += 2;
       if (/[,\s]\d{3}/.test(raw)) score += 1;
-
       out.push({ value: v, raw, line: line0, score });
     }
   }
-
   out.sort((a, b) => (b.score !== a.score ? b.score - a.score : b.value - a.value));
   return out;
 }
-
 async function ocrSlipAmount(file: File): Promise<number | null> {
-  const {
-    data: { text },
-  } = await Tesseract.recognize(file, 'tha+eng', {
+  const { data: { text }, } = await Tesseract.recognize(file, 'tha+eng', {
     workerPath: '/tesseract/worker.min.js',
     corePath: '/tesseract/tesseract-core-simd-lstm.wasm.js',
     langPath: '/tesseract/lang',
   } as any);
-
   const clean = cleanSlipText(text);
   const lines = clean.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
   const cands = parseAmountCandidates(lines);
-
   if (cands.length > 0) {
     const best = cands.find((c) => c.value >= 5) || cands[0];
     return best.value;
   }
-
   const fallback =
     /(ยอดชำระ|ยอดรวม|รวมทั้งสิ้น|สุทธิ|จำนวนเงิน|total|amount)[^0-9]{0,12}(?:฿|\bTHB\b)?\s*(\d{1,3}(?:[,\s]\d{3})+(?:\.\d{2})?|\d+(?:\.\d{2}))\b/i;
   const mm = clean.match(fallback);
   if (mm) return parseFloat(mm[2].replace(/[, ]/g, ''));
-
   return null;
 }
-
-function getExpectedAmountFromMessages(msgs: any[]): number | null {
+function getExpectedAmountFromMessages(msgs: ChatMessage[]): number | null {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.role !== 'bot' || typeof m.text !== 'string') continue;
@@ -176,8 +156,7 @@ function getExpectedAmountFromMessages(msgs: any[]): number | null {
   return null;
 }
 
-/* ====================== UI: Liquid/Glass ====================== */
-
+/* ====================== UI ====================== */
 const glassIndigo =
   'bg-indigo-500/25 hover:bg-indigo-500/35 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(49,46,129,.35)] transition active:scale-[.98],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
 const glassGreen =
@@ -193,11 +172,7 @@ const bubbleUser =
   'relative';
 
 function GlassPill({
-  children,
-  className = '',
-  color = 'indigo',
-  onClick,
-  disabled = false,
+  children, className = '', color = 'indigo', onClick, disabled = false,
 }: {
   children: React.ReactNode;
   className?: string;
@@ -218,214 +193,69 @@ function GlassPill({
   );
 }
 
-async function fetchSetMap(game: GameKey) {
-  return {}; // ไม่ดึงจาก /api/sets-map แล้ว
-}
-
-function normalizeShortId(raw: string) {
-  return (raw || '')
-    .replace(/\u200b/g, '')
-    .replace(/[’‘']/g, '')
-    .replace(/[–—]/g, '-')
-    .replace(/\s+/g, '')
-    .toUpperCase();
-}
-
-const ICON_ALIASES: Record<string, string> = {
-  // เพิ่ม alias ได้หากชื่อไฟล์ภาพไม่ตรง
-};
-
-function getSetIconFileName(shortOrName: string, map: Record<string, string>) {
-  const k = normalizeShortId(shortOrName);
-  if (map[shortOrName]) return map[shortOrName];
-  if (map[k]) return map[k];
-  return shortOrName; // fallback
-}
-
-function fullSetName(shortOrName: string, map: Record<string, string>) {
-  return map[shortOrName] || shortOrName;
-}
-
-function getSetIconPath(game: GameKey | null | undefined, shortId: string, map: Record<string, string>) {
+/* ====================== Icons + Sets (from backend) ====================== */
+function getSetIconPath(game: GameKey | null | undefined, shortId: string) {
   if (!shortId) return null;
   const folder = game === 'hsr' ? 'hsr' : 'gi';
-  const fileName = shortId.toUpperCase(); // ยึด short_id
+  // ❗ ไม่ .toUpperCase() เด็ดขาด — ต้องรักษาเคสให้ตรงไฟล์จริง (เช่น EoSF.png)
+  const fileName = shortId.trim();
   return `/pic/${folder}/${fileName}.png`;
 }
 
 function SetChip({
-  game, shortId, pieces, map,
+  game, short, full, pieces,
 }: {
   game: GameKey | null | undefined;
-  shortId: string;
-  pieces?: number;
-  map: Record<string, string>;
+  short: string;
+  full: string;
+  pieces: number;
 }) {
-  const icon = getSetIconPath(game, shortId, map);
-  const name = fullSetName(shortId, map);
+  const icon = getSetIconPath(game, short);
   return (
     <div className="flex items-center gap-2 whitespace-nowrap">
       {icon && (
         <Image
           src={icon}
-          alt={name}
+          alt={full}
           width={28}
           height={28}
           className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
           onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
         />
       )}
-      <span className="text-gray-100">
-        {name}{typeof pieces === 'number' ? ` ${pieces} ชิ้น` : ''}
-      </span>
+      <span className="text-gray-100">{full} {pieces} ชิ้น</span>
     </div>
   );
 }
 
-/** แถวแบบ HSR: Cavern Relic – Planar Ornament (เช่น "GoBS-SSS") */
-function HsrPairRow({
-  combo, map, piecesText,
+function AdviceFromBackend({
+  sets,
 }: {
-  combo: string;                 // เช่น 'GoBS-SSS'
-  map: Record<string, string>;
-  piecesText?: string;           // เช่น '4+2 ชิ้น' (optional)
+  sets: NonNullable<ApiResponse['sets']>;
 }) {
-  const [relicRaw, planarRaw] = combo.split('-').map(s => s.trim());
-  const relicIcon = getSetIconPath('hsr', relicRaw, map);
-  const planarIcon = getSetIconPath('hsr', planarRaw, map);
-  const relicName = fullSetName(relicRaw, map);
-  const planarName = fullSetName(planarRaw, map);
-
   return (
-    <div className="flex items-center gap-3 whitespace-nowrap">
-      {relicIcon && (
-        <Image
-          src={relicIcon}
-          alt={relicName}
-          width={28}
-          height={28}
-          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
-          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-        />
-      )}
-      <span className="text-gray-100">{relicName}</span>
-
-      {planarIcon && (
-        <Image
-          src={planarIcon}
-          alt={planarName}
-          width={28}
-          height={28}
-          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0 ml-4"
-          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-        />
-      )}
-      <span className="text-gray-100">{planarName}{piecesText ? ` ${piecesText}` : ''}</span>
+    <div className="space-y-2">
+      {sets.lines.map((line, idx) => (
+        <div key={idx} className="flex items-center gap-4 flex-wrap">
+          {line.map((it, j) => (
+            <SetChip key={`${idx}-${j}-${it.short}`} game={sets.game} short={it.short} full={it.full} pieces={it.pieces} />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
 
-/** แปลงข้อความคำแนะนำ Artifact/Relic ให้กลายเป็น JSX พร้อมไอคอน */
-function formatAdviceWithIcons(
-  game: GameKey | null | undefined,
-  rawText: string,
-  giMap: Record<string, string>,
-  hsrMap: Record<string, string>
-) {
-  const map = game === 'hsr' ? hsrMap : giMap;
-  const lines = splitlines(rawText);
-
-  // หา index หลังคำว่า "คือ:" เพื่อเริ่ม parse รายการ
-  let startIdx = 0;
-  for (let i = 0; i < lines.length; i++) {
-    if (/คือ\s*:?$/i.test(lines[i])) {
-      startIdx = i + 1;
-      break;
-    }
-  }
-
-  const items = lines.slice(startIdx);
-  if (!items.length) return null;
-
-  const nodes: React.ReactNode[] = [];
-  for (const ln of items) {
-    const line = ln.replace(/^\s*[-•]\s*/, '').trim();
-    if (!line) continue;
-
-    // แยก "หรือ"
-    const parts = line.split(/\s+หรือ\s+/i);
-    const row: React.ReactNode[] = [];
-
-    for (let i = 0; i < parts.length; i++) {
-      const p = parts[i].trim();
-
-      // HSR: "Relic-Planar 4 ชิ้น" หรือไม่มีจำนวน
-      if (game === 'hsr') {
-        const mCombo = p.match(/^([A-Za-z0-9\-]+)\s*(?:(\d+)\s*ชิ้น)?$/);
-        if (mCombo) {
-          const token = mCombo[1];
-          const hasDash = token.includes('-');
-          const pieces = mCombo[2] ? parseInt(mCombo[2], 10) : undefined;
-
-          if (hasDash) {
-            const piecesText = pieces ? '4+2 ชิ้น' : undefined;
-            row.push(<HsrPairRow key={`pair-${token}-${i}`} combo={token} map={map} piecesText={piecesText} />);
-            continue;
-          }
-        }
-      }
-
-      // ปกติ (GI และ HSR เดี่ยว): "XXX 4 ชิ้น" (รองรับชื่อเต็มที่มีช่องว่าง)
-      const m = p.match(/^(.+?)\s+(\d+)\s*ชิ้น$/);
-      if (m) {
-        const shortId = m[1];
-        const pieces = parseInt(m[2], 10);
-        row.push(<SetChip key={`${shortId}-${i}`} game={game} shortId={shortId} pieces={pieces} map={map} />);
-      } else {
-        // ไม่ตรง pattern => โชว์ข้อความเดิม
-        row.push(<span key={`raw-${i}`}>{p}</span>);
-      }
-    }
-
-    nodes.push(
-      <div key={ln} className="flex flex-col gap-2 mt-1">
-        {row.map((r, idx) => (
-          <div key={idx} className="flex items-center gap-3">{r}</div>
-        ))}
-      </div>
-    );
-  }
-
-  return nodes;
-}
-
-/** ตรวจว่าเป็นข้อความคำแนะนำ Artifact/Relic ไหม + ให้ค่า game */
-function detectAdviceGame(text: string): GameKey | null {
-  if (/^\s*artifact\s+ที่เหมาะกับ/i.test(text)) return 'gi';
-  if (/^\s*relic\s+ที่เหมาะกับ/i.test(text)) return 'hsr';
-  if (/^\s*ruby\s*:\s*artifact\s+ที่เหมาะกับ/i.test(text)) return 'gi';
-  if (/^\s*ruby\s*:\s*relic\s+ที่เหมาะกับ/i.test(text)) return 'hsr';
-  return null;
-}
-
-/** บับเบิลข้อความแบบ glass ของ Ruby (แบบปรับปรุง: รองรับการแสดงเซ็ต + ไอคอน) */
+/** บับเบิลข้อความของ Ruby: ถ้ามี sets ให้เรนเดอร์รูป + ชื่อเต็มตาม backend */
 function BotText({
   text,
-  giMap,
-  hsrMap,
+  sets,
 }: {
   text: string;
-  giMap: Record<string, string>;
-  hsrMap: Record<string, string>;
+  sets?: ApiResponse['sets'];
 }) {
   const tidyHead = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
   const lines = (text || '').split(/\r?\n/);
-  const head = tidyHead(lines[0] || '');
-  const game = detectAdviceGame(head);
-
-  const bodyText = text;
-
-  const adviceNodes = game ? formatAdviceWithIcons(game, bodyText, giMap, hsrMap) : null;
 
   return (
     <div className="inline-block max-w-[44rem]">
@@ -443,9 +273,9 @@ function BotText({
           <span className="text-gray-100">{tidyHead(lines[0] || '')}</span>
         </div>
 
-        {/* ถ้าเป็นบล็อกคำแนะนำ Artifact/Relic ให้ render แบบมีไอคอน */}
-        {adviceNodes ? (
-          <div className="space-y-1 text-gray-100">{adviceNodes}</div>
+        {/* ถ้ามีโครงสร้าง sets จาก backend -> เรนเดอร์ไอคอน + ชื่อเต็ม */}
+        {sets ? (
+          <AdviceFromBackend sets={sets} />
         ) : (
           lines.length > 1 && (
             <div className="space-y-1 text-gray-100">
@@ -460,19 +290,14 @@ function BotText({
   );
 }
 
-/* ====================== Menu extraction (แก้ปัญหาต้องกดซ้ำ) ====================== */
-
-/** ตัดราคาที่ท้ายข้อความ เช่น " - 179.00 บาท" และ " - 1,100.00 บาท" */
+/* ====================== Menu extraction ====================== */
 function stripPriceSuffix(s: string) {
   return s.replace(/\s*-\s*[\d,]+(?:\.\d{2})?\s*(?:บาท|฿|THB)?\s*$/i, '').trim();
 }
-
-/** แยกเมนูแบบมีเลขนำหน้าให้ได้ mapping 1..N -> label ที่อ่านรู้เรื่อง */
 function buildMenuMap(reply: string): Record<number, string> {
   const lines = reply.split(/\r?\n/);
   let cur: number | null = null;
   const acc: Record<number, string[]> = {};
-
   for (const raw of lines) {
     const line = raw.trim();
     const m = line.match(/^(\d+)[.)]\s*(.*)$/);
@@ -485,7 +310,6 @@ function buildMenuMap(reply: string): Record<number, string> {
       if (line) acc[cur].push(line);
     }
   }
-
   const out: Record<number, string> = {};
   for (const k of Object.keys(acc)) {
     const idx = parseInt(k, 10);
@@ -496,7 +320,6 @@ function buildMenuMap(reply: string): Record<number, string> {
 }
 
 /* ====================== Page Component ====================== */
-
 export default function Page() {
   /* ------------ auth ------------ */
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -513,7 +336,7 @@ export default function Page() {
 
   const handleRegister = async () => {
     if (!regUsername || !regPassword) {
-      setMessages((p) => [...p, { role: 'bot', text: 'กรุณากรอก Username/Password ให้ครบค่ะ' }]);
+      setMessages((p) => [...p, { role: 'bot', text: 'กรุณากรอก Username/Password ให้ครบค่ะ' } as ChatMessage]);
       return;
     }
     try {
@@ -529,32 +352,32 @@ export default function Page() {
       });
       const j = await r.json();
       if (r.ok && j?.ok) {
-        setMessages((p) => [...p, { role: 'bot', text: 'สมัครสมาชิกสำเร็จ! ลองเข้าสู่ระบบได้เลยค่ะ' }]);
+        setMessages((p) => [...p, { role: 'bot', text: 'สมัครสมาชิกสำเร็จ! ลองเข้าสู่ระบบได้เลยค่ะ' } as ChatMessage]);
         setUsername(regUsername.trim());
         setPassword(regPassword);
         setShowRegister(false);
       } else {
-        setMessages((p) => [...p, { role: 'bot', text: j?.message || 'สมัครไม่สำเร็จค่ะ' }]);
+        setMessages((p) => [...p, { role: 'bot', text: j?.message || 'สมัครไม่สำเร็จค่ะ' } as ChatMessage]);
       }
     } catch {
-      setMessages((p) => [...p, { role: 'bot', text: 'เกิดข้อผิดพลาดระหว่างสมัครสมาชิกค่ะ' }]);
+      setMessages((p) => [...p, { role: 'bot', text: 'เกิดข้อผิดพลาดระหว่างสมัครสมาชิกค่ะ' } as ChatMessage]);
     }
   };
 
-  /* ------------ set name maps (สำหรับไอคอน/ชื่อเต็ม) ------------ */
-  const [giMap, setGiMap] = useState<Record<string, string>>({});
-  const [hsrMap, setHsrMap] = useState<Record<string, string>>({});
-  useEffect(() => {
-    (async () => {
-      const [a, b] = await Promise.all([fetchSetMap('gi'), fetchSetMap('hsr')]);
-      setGiMap(a || {});
-      setHsrMap(b || {});
-    })();
-  }, []);
+  /* balance */
+  const [balance, setBalance] = useState(0);
+  const requestBalance = async () => {
+    if (!loggedInUser) return;
+    try {
+      const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
+      const j = await r.json();
+      if (j?.ok) setBalance(Number(j.balance) || 0);
+    } catch {}
+  };
 
   /* ------------ chat ------------ */
   const [isOpen, setIsOpen] = useState(true);
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const chatRef = useRef<HTMLDivElement>(null);
   const [isAutoScroll, setIsAutoScroll] = useState(true);
@@ -572,11 +395,11 @@ export default function Page() {
   const [dynamicQR, setDynamicQR] = useState<string[]>([]);
   const [confirmMode, setConfirmMode] = useState(false);
 
-  // จดจำเมนู 1..N ที่เพิ่งโชว์ เพื่อ map เลข -> ข้อความ
+  // mapping หมายเลขเมนู
   const [pendingNumberRange, setPendingNumberRange] = useState<{ min: number; max: number; label: string } | null>(null);
   const [menuMap, setMenuMap] = useState<Record<number, string>>({});
 
-  // จดจำ state รอ UID
+  // state รอ UID
   const [awaitingUID, setAwaitingUID] = useState(false);
 
   /* ------------ payment ------------ */
@@ -597,13 +420,11 @@ export default function Page() {
     () => (readyCalc === 'gi' ? (GI_SLOTS as readonly string[]) : readyCalc === 'hsr' ? (HSR_SLOTS as readonly string[]) : []),
     [readyCalc]
   );
-
   const haveSlots = useMemo(() => {
     if (readyCalc === 'gi') return GI_SLOTS.filter((s) => !!gearGi[s]);
     if (readyCalc === 'hsr') return HSR_SLOTS.filter((s) => !!gearHsr[s]);
     return [];
   }, [readyCalc, gearGi, gearHsr]);
-
   const missingSlots = useMemo(() => {
     if (readyCalc === 'gi') return GI_SLOTS.filter((s) => !gearGi[s]);
     if (readyCalc === 'hsr') return HSR_SLOTS.filter((s) => !gearHsr[s]);
@@ -620,19 +441,14 @@ export default function Page() {
     if (isAutoScroll && chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [messages, isAutoScroll, haveSlots.length]);
 
-  /* ====== Realtime balance (SWR) ====== */
-  const { balance, isLoading: balanceLoading, mutate: mutateBalance } = useBalance(
-    isLoggedIn ? loggedInUser : null
-  );
-
   /* ------------ push helpers ------------ */
-  const pushUser = (text: string) => setMessages((p) => [...p, { role: 'user', text }]);
+  const pushUser = (text: string) => setMessages((p) => [...p, { role: 'user', text } as ChatMessage]);
 
   const pushBotMsg = (text: string, imageUrl?: string) =>
-    setMessages((p) => [...p, { role: 'bot', text, imageUrl }]);
+    setMessages((p) => [...p, { role: 'bot', text, imageUrl } as ChatMessage]);
 
   const pushPreview = (text: string, url: string) =>
-    setMessages((p) => [...p, { role: 'preview', text, imageUrl: url }]);
+    setMessages((p) => [...p, { role: 'preview', text, imageUrl: url } as ChatMessage]);
 
   const isUnknownReply = (t?: string) =>
     !!t && /ขอโทษค่ะ.*ไม่เข้าใจ|กรุณาระบุใหม่|i don't understand|unknown/i.test(t);
@@ -644,7 +460,13 @@ export default function Page() {
     const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
     const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
 
-    setMessages((p) => [...p, { role: 'bot', text: reply, imageUrl: enforcedQR }]);
+    setMessages((p) => [...p, {
+      role: 'bot',
+      text: reply,
+      imageUrl: enforcedQR,
+      sets: data.sets, // ✅ แนบโครงสร้างเซ็ตจาก backend มาด้วย
+    } as ChatMessage]);
+
     setShowPaidButton(!!enforcedQR);
     if (enforcedQR) setPaidSoFar(0);
 
@@ -672,7 +494,7 @@ export default function Page() {
       setConfirmMode(false);
     }
 
-    // === ตรวจจับเมนูตัวเลข ===
+    // ตรวจเมนูตัวเลข
     let minSel = 1;
     let maxSel = 0;
     const rangeMatch = reply.match(/หมายเลข\s*(\d+)\s*-\s*(\d+)/i);
@@ -702,7 +524,7 @@ export default function Page() {
       setMenuMap({});
     }
 
-    // === ตรวจจับ state รอ UID ===
+    // ตรวจ state รอ UID
     if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
       setAwaitingUID(true);
       setPendingNumberRange(null);
@@ -718,21 +540,15 @@ export default function Page() {
 
   /* ------------ robust send chains ------------ */
   const robustSendPackage = async (title: string, n: number | undefined, username?: string) => {
-    // primary = ชื่อแพ็กเกจ
     let data = await callAPI(title, username);
     if (!isUnknownReply(data.reply)) return data;
-
-    // fallback เลขล้วน
     if (typeof n === 'number') {
       data = await callAPI(String(n), username);
       if (!isUnknownReply(data.reply)) return data;
-
-      // fallback คำกริยา
       data = await callAPI(`เลือกแพ็กเกจ ${n}`, username);
     }
     return data;
   };
-
   const robustSendUID = async (uid: string, username?: string) => {
     const tries = [uid, `UID: ${uid}`, `uid: ${uid}`, `UID ${uid}`, `uid ${uid}`];
     let data: ApiResponse = {};
@@ -743,20 +559,17 @@ export default function Page() {
     return data;
   };
 
-  /* ------------ ย้าย flow ยืนยันมาอยู่ส่วนกลาง ------------ */
+  /* ------------ ยืนยัน ------------ */
   const processConfirm = async () => {
-    // 1) ขอให้บอทสรุปรายการก่อน
     const res = await callAPI('ยืนยัน', loggedInUser);
     pushBot(res);
 
-    // 2) อ่านยอดชำระล่าสุด แล้วตัดเงินในกระเป๋าก่อน
     try {
       const expected = getExpectedAmountFromMessages([
         ...messages,
-        { role: 'bot', text: res.reply || '' },
+        { role: 'bot', text: res.reply || '' } as ChatMessage,
       ]) ?? 0;
 
-      // โหลด balance ปัจจุบันจาก DB
       let have = 0;
       try {
         const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
@@ -768,26 +581,13 @@ export default function Page() {
       const remain = Math.max(0, Number((expected - use).toFixed(2)));
 
       if (use > 0) {
-        // ✅ optimistic update: หักก่อนบน UI ให้เด้งไว
-        mutateBalance((prev) => ({ balance: Math.max(0, (prev?.balance ?? 0) - use) }), {
-          revalidate: false,
-          optimisticData: { balance: Math.max(0, balance - use) },
-        });
-
         const r = await fetch('/api/user/update-balance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: loggedInUser, amount: -use }),
         });
         const j = await r.json().catch(() => ({}));
-
-        if (!j?.ok) {
-          // rollback ถ้า fail
-          await mutateBalance();
-        } else {
-          // sync กับ DB
-          mutateBalance();
-        }
+        if (j?.ok) setBalance(Number(j.balance ?? have - use));
         pushBotMsg(`หักจากกระเป๋าแล้ว ${use.toFixed(2)} บาท`);
       }
 
@@ -816,20 +616,15 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    // ถ้ากำลังรอ UID อยู่ ให้พยายามกรอก UID แบบ robust
     if (awaitingUID && /^\d{6,12}$/.test(original)) {
       const data = await robustSendUID(original, loggedInUser);
       pushBot(data);
       return;
     }
 
-    // ถ้า user พิมพ์เป็นเลข และเรามีเมนู
     if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
       const n = parseInt(original, 10);
-      if (
-        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
-        menuMap[n]
-      ) {
+      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
         const title = menuMap[n];
         const data = await robustSendPackage(title, n, loggedInUser);
         pushBot(data);
@@ -837,7 +632,6 @@ export default function Page() {
       }
     }
 
-    // ปุ่ม "ดูเซ็ตตัวอื่น"
     if (/^ดูเซ็ตตัวอื่น$/i.test(original)) {
       if (!arMode) {
         pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~');
@@ -851,48 +645,30 @@ export default function Page() {
       return;
     }
 
-    // อยู่ในโหมดรอตัวละคร → ส่งตรงให้ /api
     if (arMode && !readyCalc) {
       const data = await callAPI(original, loggedInUser);
       pushBot(data);
       return;
     }
 
-    // ใช้ NLU (ยืนยัน/ยกเลิก/สลับโหมดเกม)
     const nluRes = await nlu(original);
-    if (nluRes.intent === 'confirm') {
-      await processConfirm();
-      return;
-    }
-    if (nluRes.intent === 'cancel') {
-      const data = await callAPI('ยกเลิก', loggedInUser);
-      pushBot(data);
-      return;
-    }
+    if (nluRes.intent === 'confirm') { await processConfirm(); return; }
+    if (nluRes.intent === 'cancel') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
     if (nluRes.intent === 'artifact_gi') {
-      setArMode('gi');
-      setReadyCalc(null);
+      setArMode('gi'); setReadyCalc(null);
       const open = await callAPI('ดู artifact genshin impact', loggedInUser);
       pushBot(open);
-      if (nluRes.character) {
-        const detail = await callAPI(nluRes.character, loggedInUser);
-        pushBot(detail);
-      }
+      if (nluRes.character) { const detail = await callAPI(nluRes.character, loggedInUser); pushBot(detail); }
       return;
     }
     if (nluRes.intent === 'relic_hsr') {
-      setArMode('hsr');
-      setReadyCalc(null);
+      setArMode('hsr'); setReadyCalc(null);
       const open = await callAPI('ดู relic honkai star rail', loggedInUser);
       pushBot(open);
-      if (nluRes.character) {
-        const detail = await callAPI(nluRes.character, loggedInUser);
-        pushBot(detail);
-      }
+      if (nluRes.character) { const detail = await callAPI(nluRes.character, loggedInUser); pushBot(detail); }
       return;
     }
 
-    // default
     const data = await callAPI(original, loggedInUser);
     pushBot(data);
   };
@@ -903,70 +679,37 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    // ✅ ยืนยัน
-    if (value.trim() === 'ยืนยัน') {
-      await processConfirm();
-      return;
-    }
-    if (value.trim() === 'ยกเลิก') {
-      const data = await callAPI('ยกเลิก', loggedInUser);
-      pushBot(data);
-      return;
-    }
+    if (value.trim() === 'ยืนยัน') { await processConfirm(); return; }
+    if (value.trim() === 'ยกเลิก') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
-    // ปุ่ม "ดูเซ็ตตัวอื่น"
     if (value.trim() === 'ดูเซ็ตตัวอื่น') {
-      if (!arMode) {
-        pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~');
-        return;
-      }
-      setReadyCalc(null);
-      setGearGi({});
-      setGearHsr({});
-      const open = await callAPI(
-        arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail',
-        loggedInUser
-      );
-      pushBot(open);
-      return;
+      if (!arMode) { pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~'); return; }
+      setReadyCalc(null); setGearGi({}); setGearHsr({});
+      const open = await callAPI(arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail', loggedInUser);
+      pushBot(open); return;
     }
 
-    // ถ้าปุ่มเป็นเลขและเรามี mapping -> ส่งชื่อแพ็กเกจ
     if (/^\d+$/.test(value) && (pendingNumberRange || Object.keys(menuMap).length)) {
       const n = parseInt(value, 10);
-      if (
-        (!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) &&
-        menuMap[n]
-      ) {
+      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
         const title = menuMap[n];
         const data = await robustSendPackage(title, n, loggedInUser);
-        pushBot(data);
-        return;
+        pushBot(data); return;
       }
     }
 
     const data = await callAPI(value, loggedInUser);
     pushBot(data);
 
-    if (/ดู artifact genshin impact/i.test(value)) {
-      setArMode('gi');
-      setReadyCalc(null);
-    }
-    if (/ดู relic honkai star rail/i.test(value)) {
-      setArMode('hsr');
-      setReadyCalc(null);
-    }
+    if (/ดู artifact genshin impact/i.test(value)) { setArMode('gi'); setReadyCalc(null); }
+    if (/ดู relic honkai star rail/i.test(value)) { setArMode('hsr'); setReadyCalc(null); }
   };
 
   /* ------------ Upload payment slip ------------ */
   const fileSlipOnClick = () => fileSlipRef.current?.click();
-
   const handleUploadSlip = async (file: File) => {
     const expectedFull = getExpectedAmountFromMessages(messages);
-    if (expectedFull == null) {
-      pushBotMsg('ไม่พบยอดชำระล่าสุดในแชท กรุณาลองใหม่ค่ะ');
-      return;
-    }
+    if (expectedFull == null) { pushBotMsg('ไม่พบยอดชำระล่าสุดในแชท กรุณาลองใหม่ค่ะ'); return; }
 
     const remaining = Math.max(0, Number((expectedFull - paidSoFar).toFixed(2)));
     if (remaining <= 0) {
@@ -981,10 +724,7 @@ export default function Page() {
       pushPreview('พรีวิวสลิปที่อัปโหลด', url);
 
       const actual = await ocrSlipAmount(file);
-      if (actual == null || Number.isNaN(actual)) {
-        pushBotMsg('อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲 กรุณาอัปโหลดใหม่');
-        return;
-      }
+      if (actual == null || Number.isNaN(actual)) { pushBotMsg('อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲 กรุณาอัปโหลดใหม่'); return; }
 
       const res = await fetch('/api/payment/verify', {
         method: 'POST',
@@ -994,54 +734,33 @@ export default function Page() {
       const result = await res.json();
 
       if (result.status === 'ok') {
-        setPaidSoFar(0);
-        setShowPaidButton(false);
-        setDynamicQR([]);
-        setConfirmMode(false);
+        setPaidSoFar(0); setShowPaidButton(false); setDynamicQR([]); setConfirmMode(false);
         pushBotMsg('ชำระเงินเสร็จสิ้น ✅ ขอบคุณที่ใช้บริการค่ะ');
         setTimeout(() => pushBotMsg('ขอบคุณที่ใช้บริการค่ะ 💖'), 1800);
-        // sync balance เผื่อมีเงินทอน/เครดิตอื่น
-        mutateBalance();
+        requestBalance();
       } else if (result.status === 'under') {
         const received = Number(result.actual || 0);
         const diff = Number(result.diff).toFixed(2);
         setPaidSoFar((prev) => Number((prev + received).toFixed(2)));
         setMessages((p) => [
           ...p,
-          {
-            role: 'bot',
-            text: `ยังขาดอีก ${diff} บาทค่ะ\nกรุณาโอนเพิ่มให้ครบยอด แล้วอัปโหลดสลิปอีกครั้ง`,
-            imageUrl: '/pic/qr/qr.jpg',
-          },
+          { role: 'bot', text: `ยังขาดอีก ${diff} บาทค่ะ\nกรุณาโอนเพิ่มให้ครบยอด แล้วอัปโหลดสลิปอีกครั้ง`, imageUrl: '/pic/qr/qr.jpg' } as ChatMessage,
         ]);
         setShowPaidButton(true);
       } else if (result.status === 'over') {
         const diff = Number(result.diff || 0);
-
-        // ✅ optimistic เติมเข้ากระเป๋าทันทีบน UI
-        mutateBalance((prev) => ({ balance: (prev?.balance ?? 0) + diff }), {
-          revalidate: false,
-          optimisticData: { balance: balance + diff },
-        });
-
         const r = await fetch('/api/user/update-balance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: loggedInUser, amount: diff }),
         });
         const j = await r.json().catch(() => ({}));
-        if (!j?.ok) {
-          await mutateBalance(); // rollback/sync
-        } else {
-          mutateBalance(); // sync กับ DB
-        }
+        if (j?.ok) setBalance(Number(j.balance ?? balance) || balance + diff);
 
         pushBotMsg(`โอนเกินยอด (เกิน : ${diff.toFixed(2)} บาท)\nเก็บไว้ในกระเป๋าเงินของคุณแล้วค่ะ`);
-        setShowPaidButton(false);
-        setDynamicQR([]);
-        setConfirmMode(false);
-        setPaidSoFar(0);
+        setShowPaidButton(false); setDynamicQR([]); setConfirmMode(false); setPaidSoFar(0);
         setTimeout(() => pushBotMsg('ขอบคุณที่ใช้บริการค่ะ 💖'), 1800);
+        requestBalance();
       } else {
         pushBotMsg('อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲');
       }
@@ -1054,11 +773,7 @@ export default function Page() {
 
   /* ------------ Upload Artifact/Relic ------------ */
   const handleUploadGear = async (file: File) => {
-    if (!readyCalc) {
-      pushBotMsg('ยังไม่ได้เลือกตัวละครเพื่อแนะนำก่อนนะคะ');
-      return;
-    }
-
+    if (!readyCalc) { pushBotMsg('ยังไม่ได้เลือกตัวละครเพื่อแนะนำก่อนนะคะ'); return; }
     const url = URL.createObjectURL(file);
     pushPreview(`พรีวิวชิ้นจากภาพ (${readyCalc.toUpperCase()})`, url);
 
@@ -1070,8 +785,7 @@ export default function Page() {
         const slot = piece as GiSlot | undefined;
         if (slot && (GI_SLOTS as readonly string[]).includes(slot)) {
           const newItem: GearItem = {
-            url,
-            piece: slot,
+            url, piece: slot,
             setName: parsed.setName || null,
             mainStat: parsed.mainStat || null,
             substats: parsed.substats || [],
@@ -1082,10 +796,7 @@ export default function Page() {
           const head = parsed.setName ? `เซ็ต: ${parsed.setName}` : 'เซ็ต: (อ่านไม่ชัด)';
           const pieceLine = piece ? `ชิ้น: ${piece}` : 'ชิ้น: (ยังเดาไม่ได้)';
           const main = parsed.mainStat ? `Main Stat: ${parsed.mainStat.name} ${parsed.mainStat.value}` : 'Main Stat: -';
-          const subs =
-            parsed.substats.length
-              ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n')
-              : '• (ไม่พบ substats ชัดเจน)';
+          const subs = parsed.substats.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
           pushBotMsg([head, pieceLine, main, subs].join('\n'));
 
           const need = GI_SLOTS.filter((s) => !next[s as GiSlot]);
@@ -1104,8 +815,7 @@ export default function Page() {
         const slot = piece as HsrSlot | undefined;
         if (slot && (HSR_SLOTS as readonly string[]).includes(slot)) {
           const newItem: GearItem = {
-            url,
-            piece: slot,
+            url, piece: slot,
             setName: parsed.setName || null,
             mainStat: parsed.mainStat || null,
             substats: parsed.substats || [],
@@ -1116,10 +826,7 @@ export default function Page() {
           const head = parsed.setName ? `เซ็ต: ${parsed.setName}` : 'เซ็ต: (อ่านไม่ชัด)';
           const pieceLine = piece ? `ชิ้น: ${piece}` : 'ชิ้น: (ยังเดาไม่ได้)';
           const main = parsed.mainStat ? `Main Stat: ${parsed.mainStat.name} ${parsed.mainStat.value}` : 'Main Stat: -';
-          const subs =
-            parsed.substats.length
-              ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n')
-              : '• (ไม่พบ substats ชัดเจน)';
+          const subs = parsed.substats.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
           pushBotMsg([head, pieceLine, main, subs].join('\n'));
 
           const need = HSR_SLOTS.filter((s) => !next[s as HsrSlot]);
@@ -1161,21 +868,18 @@ export default function Page() {
                 บัญชีที่เข้าสู่ระบบ: <span className="font-semibold">{loggedInUser}</span>
               </p>
               <p className="text-emerald-300 mt-2">
-                ยอดคงเหลือในกระเป๋า:{' '}
-                <span className="font-semibold">
-                  {balanceLoading ? '...' : balance.toFixed(2)}
-                </span>{' '}
-                บาท
+                ยอดคงเหลือในกระเป๋า: <span className="font-semibold">{balance.toFixed(2)}</span> บาท
               </p>
             </div>
             <div className="flex gap-3 justify-center">
-              {/* ปุ่มรีเฟรชถูกถอดออกแล้ว เพราะเป็น realtime */}
+              <GlassPill color="indigo" onClick={requestBalance}>รีเฟรชยอด</GlassPill>
               <GlassPill
                 color="indigo"
                 onClick={() => {
                   setIsLoggedIn(false);
                   setLoggedInUser('');
-                  setMessages([{ role: 'bot', text: 'คุณได้ออกจากระบบแล้วค่ะ' }]);
+                  setBalance(0);
+                  setMessages([{ role: 'bot', text: 'คุณได้ออกจากระบบแล้วค่ะ' } as ChatMessage]);
                   setIsOpen(false);
                   setDynamicQR([]); setConfirmMode(false);
                   setShowPaidButton(false); setPaidSoFar(0);
@@ -1191,7 +895,6 @@ export default function Page() {
           </>
         ) : (
           <>
-            {/* สวิตช์ เข้าสู่ระบบ / สมัครสมาชิก */}
             <div className="flex justify-center mb-4 gap-2">
               <button
                 className={`px-3 py-1 rounded-full text-sm ${!showRegister ? 'bg-white/15 ring-1 ring-white/20' : 'hover:bg-white/10'}`}
@@ -1208,7 +911,6 @@ export default function Page() {
             </div>
 
             {!showRegister ? (
-              // ===== ฟอร์มล็อกอิน =====
               <>
                 <div className="text-center mb-6">
                   <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
@@ -1237,11 +939,11 @@ export default function Page() {
                     color="indigo"
                     className="w-full justify-center"
                     onClick={async () => {
-                      // (เดโม) Login ตรง ๆ — เพียงตั้งสถานะ, SWR จะเริ่มดึงยอดเอง (ไม่ต้องเรียก requestBalance)
                       setIsLoggedIn(true);
                       setLoggedInUser(username || 'user');
-                      setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
+                      setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' } as ChatMessage]);
                       setIsOpen(true);
+                      setTimeout(requestBalance, 200);
                     }}
                   >
                     เข้าสู่ระบบ
@@ -1249,7 +951,6 @@ export default function Page() {
                 </div>
               </>
             ) : (
-              // ===== ฟอร์มสมัครสมาชิก =====
               <>
                 <div className="text-center mb-6">
                   <p className="text-lg">สมัครสมาชิก</p>
@@ -1315,13 +1016,7 @@ export default function Page() {
           <div className="bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl ring-1 ring-white/10 flex flex-col h-[80vh]">
             <div className="flex justify-between items-center p-4 border-b border-white/10 rounded-t-2xl">
               <span className="font-medium text-xl">แชทบอท</span>
-              <button
-                className="rounded-full px-2 py-1 hover:bg-white/10"
-                onClick={() => setIsOpen(false)}
-                aria-label="close chat"
-              >
-                ✕
-              </button>
+              <button className="rounded-full px-2 py-1 hover:bg-white/10" onClick={() => setIsOpen(false)} aria-label="close chat">✕</button>
             </div>
 
             <div ref={chatRef} onScroll={handleScroll} className="p-4 overflow-y-auto flex-1 text-lg space-y-4">
@@ -1349,7 +1044,7 @@ export default function Page() {
                   ) : (
                     <div className="flex justify-start">
                       <div className="max-w-[85%]">
-                        <BotText text={msg.text} giMap={giMap} hsrMap={hsrMap} />
+                        <BotText text={msg.text} sets={msg.sets} />
                         {msg.imageUrl && (
                           <Image
                             src={msg.imageUrl}
@@ -1375,10 +1070,9 @@ export default function Page() {
                   </p>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
                     {expectedSlots.map((slotName) => {
-                      const it =
-                        readyCalc === 'gi'
-                          ? gearGi[slotName as GiSlot]
-                          : (gearHsr[slotName as HsrSlot] as GearItem | undefined);
+                      const it = readyCalc === 'gi'
+                        ? gearGi[slotName as GiSlot]
+                        : (gearHsr[slotName as HsrSlot] as GearItem | undefined);
                       return (
                         <div
                           key={slotName}
@@ -1415,12 +1109,7 @@ export default function Page() {
             {/* Bottom buttons */}
             <div className="p-3 bg-transparent flex flex-wrap gap-3 rounded-b-2xl border-t border-white/10">
               {showPaidButton ? (
-                <GlassPill
-                  onClick={fileSlipOnClick}
-                  disabled={verifying}
-                  color="green"
-                  className="shadow-emerald-900/40"
-                >
+                <GlassPill onClick={fileSlipOnClick} disabled={verifying} color="green" className="shadow-emerald-900/40">
                   {verifying ? 'กำลังตรวจสอบสลิป...' : 'อัปโหลดสลิป & ตรวจยอด'}
                 </GlassPill>
               ) : (
@@ -1461,21 +1150,15 @@ export default function Page() {
                 className="w-full rounded-full px-4 py-2 text-gray-100 bg-white/10 backdrop-blur-md ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               />
-              <GlassPill color="indigo" onClick={handleSend}>
-                →
-              </GlassPill>
+              <GlassPill color="indigo" onClick={handleSend}>→</GlassPill>
             </div>
           </div>
         )}
 
-        {!isLoggedIn && (
-          <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>
-        )}
+        {!isLoggedIn && <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>}
         {!isOpen && isLoggedIn && (
           <div className="mx-auto mt-2">
-            <GlassPill color="indigo" onClick={() => setIsOpen(true)}>
-              💬 แชทกับเรา
-            </GlassPill>
+            <GlassPill color="indigo" onClick={() => setIsOpen(true)}>💬 แชทกับเรา</GlassPill>
           </div>
         )}
       </div>
