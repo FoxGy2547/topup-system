@@ -16,8 +16,7 @@
   ],
   "crons": [
     {
-      "path": "/api/cron/sync-gi?key=${CRON_KEY}",
-      "schedule": "0 23 * * *"
+      "path": "/api/cron/sync-gi", "schedule": "0 23 * * *"
     }
   ]
 }
