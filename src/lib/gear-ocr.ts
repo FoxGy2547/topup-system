@@ -1,5 +1,5 @@
 // /src/lib/gear-ocr.ts
-import Tesseract from 'tesseract.js';
+import { ocrWithFallback } from '@/lib/tess';
 
 export type GameKey = 'gi' | 'hsr';
 
@@ -436,13 +436,7 @@ function parseHSR(text: string) {
 /* ====================== Public API ====================== */
 
 export async function ocrGear(file: File, game: GameKey) {
-  const {
-    data: { text },
-  } = await Tesseract.recognize(file, 'tha+eng', {
-    workerPath: '/tesseract/worker.min.js',
-    corePath: '/tesseract/tesseract-core-lstm.wasm.js',
-    langPath: '/tesseract/lang',
-  } as any);
-
+  // ✅ ใช้ helper เดียวกับฝั่งสลิป: ลอง SIMD → Fallback อัตโนมัติ
+  const text = await ocrWithFallback(file, 'tha+eng');
   return game === 'gi' ? parseGI(text) : parseHSR(text);
 }

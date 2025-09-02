@@ -3,7 +3,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
-import Tesseract from 'tesseract.js';
+import { ocrWithFallback } from '@/lib/tess';
 
 import { ocrGear, GearItem, GiSlot, HsrSlot, GameKey } from '@/lib/gear-ocr';
 
@@ -125,11 +125,8 @@ function parseAmountCandidates(lines: string[]) {
   return out;
 }
 async function ocrSlipAmount(file: File): Promise<number | null> {
-  const { data: { text }, } = await Tesseract.recognize(file, 'tha+eng', {
-    workerPath: '/tesseract/worker.min.js',
-    corePath: '/tesseract/tesseract-core-simd-lstm.wasm.js',
-    langPath: '/tesseract/lang',
-  } as any);
+  // ✅ ใช้ ocrWithFallback (ลอง SIMD → no-SIMD อัตโนมัติ)
+  const text = await ocrWithFallback(file, 'tha+eng');
   const clean = cleanSlipText(text);
   const lines = clean.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
   const cands = parseAmountCandidates(lines);
