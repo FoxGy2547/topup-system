@@ -13,5 +13,11 @@
         { "key": "Cross-Origin-Resource-Policy", "value": "cross-origin" }
       ]
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/sync-gi?key=${CRON_KEY}",
+      "schedule": "0 23 * * *"
+    }
   ]
 }
