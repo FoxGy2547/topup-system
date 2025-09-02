@@ -6,7 +6,7 @@ import { getPool } from '@/lib/db';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const MIN_INTERVAL_MIN = Number(process.env.GI_SYNC_MIN_INTERVAL_MIN || 720); // ดีฟอลต์ 12 ชม.
+const MIN_INTERVAL_MIN = Number(process.env.GI_SYNC_MIN_INTERVAL_MIN || 720); // 12 ชม.
 const CRON_KEY = process.env.CRON_KEY;
 
 async function canRun(): Promise<boolean> {
@@ -29,22 +29,36 @@ async function markRun() {
   );
 }
 
+async function tableCounts() {
+  const pool = getPool();
+  const [a]: any = await pool.query('SELECT COUNT(*) AS c FROM gi_base_stats');
+  const [b]: any = await pool.query('SELECT COUNT(*) AS c FROM character_sets WHERE game="gi"');
+  const [c]: any = await pool.query('SELECT COUNT(*) AS c FROM items_gi');
+  return { gi_base_stats: a[0]?.c ?? 0, character_sets: b[0]?.c ?? 0, items_gi: c[0]?.c ?? 0 };
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const key = url.searchParams.get('key');
+  const force = url.searchParams.get('force') === '1';
+
   if (!CRON_KEY || key !== CRON_KEY) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
-  const okToRun = await canRun();
-  if (!okToRun) {
-    return NextResponse.json({ ok: true, skipped: true, reason: 'interval_guard' });
+  if (!force) {
+    const okToRun = await canRun();
+    if (!okToRun) {
+      const counts = await tableCounts();
+      return NextResponse.json({ ok: true, skipped: true, reason: 'interval_guard', counts });
+    }
   }
 
   try {
     const result = await syncGiAll();
     await markRun();
-    return NextResponse.json({ ok: true, ...result });
+    const counts = await tableCounts();
+    return NextResponse.json({ ok: true, ...result, counts });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || String(e) }, { status: 500 });
   }

@@ -7,35 +7,30 @@ async function loadCheerio() {
 }
 
 const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) NinoSync/1.0 Chrome/120 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) NinoSync/1.1 Chrome/120 Safari/537.36';
 
 const FANDOM_LIST = 'https://genshin-impact.fandom.com/wiki/Character/List';
 const FANDOM_COMP = 'https://genshin-impact.fandom.com/wiki/Character/Comparison';
 const GGG_BASE = 'https://genshin.gg';
 const GGG_BUILDS = `${GGG_BASE}/builds/`;
 
-function esc(s: string) {
-  return s.replace(/'/g, "''");
-}
-
+function esc(s: string) { return s.replace(/'/g, "''"); }
 async function fetchHtml(url: string) {
   const res = await fetch(url, { headers: { 'user-agent': UA, 'cache-control': 'no-cache' } });
   if (!res.ok) throw new Error(`Fetch failed ${res.status} ${url}`);
   return await res.text();
 }
-
 function parseNum(txt: string) {
   const t = txt.replace(/[, ]/g, '').replace(/%/g, '');
   const n = Number(t);
   return Number.isFinite(n) ? n : 0;
 }
-
 function normKey(s: string) {
   return s.toLowerCase().replace(/\s+/g, ' ').trim()
     .replace(/[’'`]/g, '').replace(/[()]/g, '').replace(/\s+/g, '');
 }
 
-// short_id: แยกด้วย "ช่องว่าง" เท่านั้น (hyphen ไม่แยก)
+// short_id: แยกด้วย “ช่องว่างเท่านั้น” (hyphen = คำเดียว)
 function shortIdBySpaces(name: string) {
   const words = name.replace(/\s+/g, ' ').trim()
     .split(' ')
@@ -70,40 +65,57 @@ function ascToCols(stat?: string, val?: number) {
   return z;
 }
 
+// ✅ เจาะ section “Playable Characters” ชัด ๆ แล้วอ่าน table ถัดมา
 async function fandomPlayableNames(): Promise<string[]> {
   const html = await fetchHtml(FANDOM_LIST);
   const { load } = await loadCheerio();
   const $ = load(html);
   const names = new Set<string>();
 
-  $('table.article-table a').each((_, el) => {
-    const name = ($(el).text() || '').trim();
+  // หา heading ที่เขียนว่า "Playable Characters"
+  const h = $('span.mw-headline, h2, h3').filter((_, el) =>
+    /playable characters/i.test($(el).text())
+  ).first();
+
+  let table = h.length ? h.closest('h2,h3').nextAll('table').first() : $('table.article-table').first();
+  if (!table.length) table = $('table').first();
+
+  table.find('tbody tr').each((_, tr) => {
+    const link = $(tr).find('a[href*="/wiki/"]').first();
+    const name = (link.text() || '').trim();
     if (!name) return;
     if (!/^[A-Za-z]/.test(name)) return;
-    if (/archive|icon|file|files/i.test(name)) return;
     names.add(name);
   });
 
   return Array.from(names);
 }
 
+// ✅ เล็งตารางที่มีหัว “Base Stats (Lv. 90)” + คอลัมน์ Asc Stat/Value
 async function fandomComparisonRows(): Promise<BaseRow[]> {
   const html = await fetchHtml(FANDOM_COMP);
   const { load } = await loadCheerio();
   const $ = load(html);
 
   const out: BaseRow[] = [];
+
   $('table').each((_, tbl) => {
-    const headers = $(tbl).find('th').map((__, th) => $(th).text().trim().toLowerCase()).get();
+    const $tbl = $(tbl);
+    const caption = $tbl.prev('h2,h3').text().toLowerCase();
+    const looksRight = /base stats|lv\.?\s*90/i.test(caption);
+    const headers = $tbl.find('th').map((__, th) => $(th).text().trim().toLowerCase()).get();
+
     const idxName = headers.findIndex(h => /name|character/.test(h));
     const idxHP   = headers.findIndex(h => /^hp\b/.test(h));
     const idxATK  = headers.findIndex(h => /^atk\b/.test(h));
     const idxDEF  = headers.findIndex(h => /^def\b/.test(h));
     const idxAS   = headers.findIndex(h => /ascension stat/.test(h));
     const idxAV   = headers.findIndex(h => /ascension value/.test(h));
-    if ([idxName, idxHP, idxATK, idxDEF, idxAS, idxAV].some(i => i === -1)) return;
 
-    $(tbl).find('tbody tr').each((__, tr) => {
+    if (!looksRight && [idxAS, idxAV].some(i => i === -1)) return;
+    if ([idxName, idxHP, idxATK, idxDEF].some(i => i === -1)) return;
+
+    $tbl.find('tbody tr').each((__, tr) => {
       const cols = $(tr).find('td,th').map((___, td) => $(td).text().trim()).get();
       const name = (cols[idxName] || '').replace(/\s+/g, ' ').trim();
       if (!name) return;
@@ -111,8 +123,9 @@ async function fandomComparisonRows(): Promise<BaseRow[]> {
       const atk = parseNum(cols[idxATK] || '0');
       const def = parseNum(cols[idxDEF] || '0');
       if (hp <= 0 || atk <= 0 || def <= 0) return;
-      const ascStat = (cols[idxAS] || '').trim() || undefined;
-      const ascValue = parseNum(cols[idxAV] || '0') || undefined;
+      const ascStat = idxAS >= 0 ? (cols[idxAS] || '').trim() || undefined : undefined;
+      const ascValue = idxAV >= 0 ? (parseNum(cols[idxAV] || '0') || undefined) : undefined;
+
       out.push({ name, key: normKey(name), hp, atk, def, ascStat, ascValue });
     });
   });
@@ -127,12 +140,8 @@ function matchListToComparison(listNames: string[], comp: BaseRow[]) {
   const matched = new Map<string, BaseRow>();
   for (const name of listNames) {
     const key = normKey(name);
-    const row = compMap.get(key);
+    const row = compMap.get(key) ?? comp.find(r => r.key === normKey(name.replace(/\(.*?\)/g, '').trim()));
     if (row) matched.set(row.key, row);
-    else {
-      const fb = comp.find(r => r.key === normKey(name.replace(/\(.*?\)/g, '').trim()));
-      if (fb) matched.set(fb.key, fb);
-    }
   }
   return Array.from(matched.values());
 }
@@ -168,9 +177,8 @@ async function gggCharacterLinks(): Promise<{ name: string; url: string }[]> {
   const html = await fetchHtml(GGG_BUILDS);
   const $ = load(html);
   const out: { name: string; url: string }[] = [];
-  $('a').each((_, el) => {
-    const href = $(el).attr('href') || '';
-    if (!/^\/characters\/[^/]+\/$/.test(href)) return;
+  $('a[href^="/characters/"][href$="/"]').each((_, el) => {
+    const href = $(el).attr('href')!;
     const label = ($(el).text() || $(el).attr('title') || $(el).attr('aria-label') || '').trim();
     if (!label) return;
     out.push({ name: label, url: new URL(href, GGG_BASE).toString() });
@@ -196,8 +204,7 @@ async function gggBestArtifacts(url: string): Promise<string[]> {
     const mTwo = txt.match(/(.+?)\s+2\s+(.+?)\s+2\b/i);
     const mFour = txt.match(/(.+?)\s+4\b/i);
     if (mTwo) {
-      const a = mTwo[1].trim();
-      const b = mTwo[2].trim();
+      const a = mTwo[1].trim(); const b = mTwo[2].trim();
       if (a && b) picks.push(`${a} (2) + ${b} (2)`);
       return;
     }
@@ -218,7 +225,7 @@ function buildSetShort(picks: string[]) {
     if (two) {
       const s1 = shortIdBySpaces(two[1]);
       const s2 = shortIdBySpaces(two[2]);
-      shorts.push(`${s1}+${s2}`);
+      shorts.push(`${s1}+${s2}`); // ภายใน 2+2 ใช้ '+'
     } else if (four) {
       shorts.push(shortIdBySpaces(four[1]));
     }
@@ -261,12 +268,13 @@ export async function syncGiBaseStats() {
   const comp = await fandomComparisonRows();
   const rows = matchListToComparison(list, comp);
   await upsertBaseStats(rows);
-  return { updated: rows.length };
+  return { updated: rows.length, sample: rows.slice(0, 5).map(r => r.name) };
 }
 
 export async function syncGiRecommendedSets() {
   const chars = await gggCharacterLinks();
   let updated = 0;
+  const touched: string[] = [];
   for (const c of chars) {
     const picks = await gggBestArtifacts(c.url);
     if (!picks.length) continue;
@@ -274,12 +282,13 @@ export async function syncGiRecommendedSets() {
     const setShort = buildSetShort(picks);
     await upsertCharacterSet(c.name, setShort);
     updated++;
+    if (touched.length < 5) touched.push(`${c.name} → ${setShort}`);
   }
-  return { updated };
+  return { updated, sample: touched };
 }
 
 export async function syncGiAll() {
   const a = await syncGiRecommendedSets();
   const b = await syncGiBaseStats();
-  return { sets_updated: a.updated, base_updated: b.updated };
+  return { sets_updated: a.updated, base_updated: b.updated, sets_sample: a.sample, base_sample: b.sample };
 }
