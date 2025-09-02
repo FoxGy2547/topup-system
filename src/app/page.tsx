@@ -955,7 +955,7 @@ export default function Page() {
                   <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
                 </div>
                 <div className="mb-4">
-                  <label className="block text-sm mb-2 opacity-80">Username:</label>
+                  <label className="block text-sm mb-2 opacity-80">Username :</label>
                   <input
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
@@ -964,7 +964,7 @@ export default function Page() {
                   />
                 </div>
                 <div className="mb-6">
-                  <label className="block text-sm mb-2 opacity-80">Password:</label>
+                  <label className="block text-sm mb-2 opacity-80">Password :</label>
                   <input
                     type="password"
                     value={password}
