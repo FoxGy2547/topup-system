@@ -440,7 +440,7 @@ export async function ocrGear(file: File, game: GameKey) {
     data: { text },
   } = await Tesseract.recognize(file, 'tha+eng', {
     workerPath: '/tesseract/worker.min.js',
-    corePath: '/tesseract/tesseract-core-simd-lstm.wasm.js',
+    corePath: '/tesseract/tesseract-core-lstm.wasm.js',
     langPath: '/tesseract/lang',
   } as any);
 
