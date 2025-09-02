@@ -1,4 +1,4 @@
-// /src/app/api/cron/sync-gi/route.ts
+// src/app/api/cron/sync-gi/route.ts
 import { NextResponse } from 'next/server';
 import { syncGiAll } from '@/lib/gi-sync';
 import { getPool } from '@/lib/db';
@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const MIN_INTERVAL_MIN = Number(process.env.GI_SYNC_MIN_INTERVAL_MIN || 720); // 12 ชม.
-const CRON_KEY = process.env.CRON_KEY;
+const CRON_KEY = process.env.CRON_KEY || '';
 
 async function canRun(): Promise<boolean> {
   const pool = getPool();
@@ -39,11 +39,20 @@ async function tableCounts() {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const key = url.searchParams.get('key');
+  const key = url.searchParams.get('key') || '';
   const force = url.searchParams.get('force') === '1';
 
-  if (!CRON_KEY || key !== CRON_KEY) {
-    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  // ✅ อนุญาตถ้าอย่างใดอย่างหนึ่งผ่าน:
+  // 1) key ตรงกับ CRON_KEY   หรือ
+  // 2) เป็น Scheduled Cron จริง (Vercel ใส่ header x-vercel-cron: 1 มาให้)
+  const isVercelCron = req.headers.get('x-vercel-cron') === '1';
+  const authorized = (CRON_KEY && key === CRON_KEY) || isVercelCron;
+
+  if (!authorized) {
+    return NextResponse.json(
+      { ok: false, error: 'unauthorized', hint: 'pass ?key=<CRON_KEY> or run via Vercel Cron (x-vercel-cron header)' },
+      { status: 401 }
+    );
   }
 
   if (!force) {
