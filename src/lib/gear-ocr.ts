@@ -47,7 +47,7 @@ const STAT_MAP: Record<string, string> = {
   'พลังโจมตี': 'ATK',
   'พลังป้องกัน': 'DEF',
   'ความชำนาญธาตุ': 'Elemental Mastery',
-  'อัตราการฟื้นฟูพลังาน': 'Energy Recharge',
+  'อัตราการฟื้นฟูพลังงาน': 'Energy Recharge',
   'การฟื้นฟูพลังงาน': 'Energy Recharge',
   'อัตราคริติคอล': 'CRIT Rate',
   'อัตราคริ': 'CRIT Rate',
@@ -166,7 +166,6 @@ function detectPieceHSR(linesEN: string[]): HsrSlot | null {
 }
 
 /* ====================== Main/Sub parsing ====================== */
-// รายชื่อค่าสเตตที่รองรับ
 const MAIN_NAMES = [
   'HP','ATK','DEF',
   'Elemental Mastery','Energy Recharge',
@@ -409,7 +408,7 @@ export async function ocrGear(file: File | Blob, game: GameKey): Promise<GearIte
   const parsed = game === 'gi' ? parseGI(text) : parseHSR(text);
   return {
     url: '', // หน้าบ้านจะยัด URL พรีวิวเอง
-    piece: parsed.piece as any,
+    piece: parsed.piece as GiSlot | HsrSlot,
     setName: parsed.setName || null,
     mainStat: parsed.mainStat,
     substats: parsed.substats,
