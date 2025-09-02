@@ -5,35 +5,40 @@ import { getPool } from '@/lib/db';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
+  const pool = getPool();
+
   try {
     const { username, amount } = await req.json();
+
     if (!username || typeof amount !== 'number' || !isFinite(amount)) {
       return NextResponse.json({ ok: false, message: 'bad params' }, { status: 400 });
     }
-    const pool = getPool();
 
-    // ใช้ transaction กัน race condition เล็ก ๆ
+    // ใช้ทรานแซกชัน + อัปเดตแบบนิพจน์ (atomic) ป้องกัน race และปัดทศนิยมให้เรียบร้อย
     await pool.query('START TRANSACTION');
 
-    const [rows] = await pool.query('SELECT balance FROM users WHERE username = ? FOR UPDATE', [username]);
-    const row = Array.isArray(rows) ? (rows as any[])[0] : null;
-    if (!row) {
+    const [res] = await pool.query(
+      'UPDATE users SET balance = ROUND(COALESCE(balance, 0) + ?, 2) WHERE username = ?',
+      [amount, username]
+    );
+
+    // ตรวจผลว่าอัปเดตโดนแถวไหม
+    const updated = (res as any)?.affectedRows ?? (res as any)?.rowCount ?? 0;
+    if (!updated) {
       await pool.query('ROLLBACK');
       return NextResponse.json({ ok: false, message: 'user not found' }, { status: 404 });
     }
 
-    const current = Number(row.balance ?? 0);
-    const next = Number((current + amount).toFixed(2));
+    // อ่านค่าใหม่เพื่อส่งกลับ
+    const [rows] = await pool.query('SELECT balance FROM users WHERE username = ? LIMIT 1', [username]);
+    const row = Array.isArray(rows) ? (rows as any[])[0] : null;
 
-    await pool.query('UPDATE users SET balance = ? WHERE username = ?', [next, username]);
     await pool.query('COMMIT');
 
-    return NextResponse.json({ ok: true, balance: next });
+    const balance = row && row.balance != null ? Number(row.balance) : 0;
+    return NextResponse.json({ ok: true, balance });
   } catch (e) {
-    try {
-      const pool = getPool();
-      await pool.query('ROLLBACK');
-    } catch {}
+    try { await pool.query('ROLLBACK'); } catch {}
     return NextResponse.json({ ok: false, message: 'db error' }, { status: 500 });
   }
 }

@@ -1,12 +1,13 @@
 // /src/app/page.tsx
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import Tesseract from 'tesseract.js';
 
 // OCR เกียร์ (ถ้าใช้ฟีเจอร์นี้อยู่)
 import { ocrGear, GearItem, GiSlot, HsrSlot, GameKey } from '@/lib/gear-ocr';
+import { useBalance } from '@/hooks/useBalance';
 
 /* ====================== Types ====================== */
 type QuickReply = { label: string; value: string };
@@ -221,7 +222,6 @@ async function fetchSetMap(game: GameKey) {
   return {}; // ไม่ดึงจาก /api/sets-map แล้ว
 }
 
-/* ===== Icon + Name helpers (อัปเดตใหม่) ===== */
 function normalizeShortId(raw: string) {
   return (raw || '')
     .replace(/\u200b/g, '')
@@ -230,106 +230,39 @@ function normalizeShortId(raw: string) {
     .replace(/\s+/g, '')
     .toUpperCase();
 }
-function normalizeFullName(raw: string) {
-  return (raw || '')
-    .replace(/\u200b/g, '')
-    .replace(/[’‘’]/g, "'")
-    .replace(/[–—]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toUpperCase();
+
+const ICON_ALIASES: Record<string, string> = {
+  // เพิ่ม alias ได้หากชื่อไฟล์ภาพไม่ตรง
+};
+
+function getSetIconFileName(shortOrName: string, map: Record<string, string>) {
+  const k = normalizeShortId(shortOrName);
+  if (map[shortOrName]) return map[shortOrName];
+  if (map[k]) return map[k];
+  return shortOrName; // fallback
 }
 
-// GI: ชื่อเต็ม <-> ย่อ (เพิ่มได้ตามไฟล์จริงใน /public/pic/gi)
-const SHORT_TO_FULL_GI: Record<string, string> = {
-  GT: 'Golden Troupe',
-  MH: 'Marechaussee Hunter',
-};
-const NAME_TO_SHORT_GI: Record<string, string> = {
-  'GOLDEN TROUPE': 'GT',
-  'MARECHAUSSEE HUNTER': 'MH',
-};
-
-// HSR: ชื่อเต็ม <-> ย่อ (เพิ่มได้ตามไฟล์จริงใน /public/pic/hsr)
-const SHORT_TO_FULL_HSR: Record<string, string> = {
-  PIDC: 'Pioneer Diver of Dead Waters',
-  SSS: 'Space Sealing Station',
-  // เพิ่มได้ตามรูปในโปรเจกต์:
-  // MUSK: 'Musketeer of Wild Wheat',
-  // HUNT: 'Hunter of Glacial Forest',
-};
-const NAME_TO_SHORT_HSR: Record<string, string> = {
-  'PIONEER DIVER OF DEAD WATERS': 'PIDC',
-  'SPACE SEALING STATION': 'SSS',
-  // 'MUSKETEER OF WILD WHEAT': 'MUSK',
-  // 'HUNTER OF GLACIAL FOREST': 'HUNT',
-};
-
-// คืน short_id จาก "ชื่อเต็มหรือย่อ"
-function pickShortId(game: GameKey | null | undefined, shortOrName: string, map: Record<string, string>) {
-  const raw = (shortOrName || '').trim();
-  const normShort = normalizeShortId(raw);
-  const normFull = normalizeFullName(raw);
-
-  // 1) ลองใช้ map ภายนอก (ถ้ามี)
-  if (map[raw]) return map[raw];
-  if (map[normFull]) return map[normFull];
-  if (map[normShort]) return map[normShort];
-
-  // 2) ใช้แมพในไฟล์นี้
-  if (game === 'gi') {
-    if (NAME_TO_SHORT_GI[normFull]) return NAME_TO_SHORT_GI[normFull];
-    if (SHORT_TO_FULL_GI[normShort]) return normShort;
-  } else {
-    if (NAME_TO_SHORT_HSR[normFull]) return NAME_TO_SHORT_HSR[normFull];
-    if (SHORT_TO_FULL_HSR[normShort]) return normShort;
-  }
-
-  // 3) ถ้าไม่มีช่องว่าง (= น่าจะเป็นย่อแล้ว) ก็คืนไปเลย
-  if (!/\s/.test(raw)) return normShort;
-
-  // 4) ไม่รู้จัก
-  return '';
+function fullSetName(shortOrName: string, map: Record<string, string>) {
+  return map[shortOrName] || shortOrName;
 }
 
-// คืนชื่อเต็มไว้โชว์
-function pickFullName(game: GameKey | null | undefined, shortOrName: string, map: Record<string, string>) {
-  const raw = (shortOrName || '').trim();
-  // ถ้า map ภายนอกมีชื่อเต็มให้ ก็ใช้เลย
-  if (map[raw]) return map[raw];
-  if (map[normalizeFullName(raw)]) return map[normalizeFullName(raw)];
-  if (map[normalizeShortId(raw)]) return map[normalizeShortId(raw)] as any;
-
-  // ใช้แมพในไฟล์นี้
-  const shortId = pickShortId(game, raw, {});
-  if (shortId) {
-    if (game === 'gi' && SHORT_TO_FULL_GI[shortId]) return SHORT_TO_FULL_GI[shortId];
-    if (game === 'hsr' && SHORT_TO_FULL_HSR[shortId]) return SHORT_TO_FULL_HSR[shortId];
-  }
-  // ไม่แมพได้ ก็คืนค่าดิบ (อาจเป็นชื่อเต็มอยู่แล้ว)
-  return raw;
-}
-
-function getSetIconPath(game: GameKey | null | undefined, shortIdOrName: string, map: Record<string, string>) {
-  if (!shortIdOrName) return null;
-  const key = pickShortId(game, shortIdOrName, map);
-  if (!key) return null;
+function getSetIconPath(game: GameKey | null | undefined, shortId: string, map: Record<string, string>) {
+  if (!shortId) return null;
   const folder = game === 'hsr' ? 'hsr' : 'gi';
-  return `/pic/${folder}/${key.toUpperCase()}.png`;
+  const fileName = shortId.toUpperCase(); // ยึด short_id
+  return `/pic/${folder}/${fileName}.png`;
 }
-
-/* ====================== Chips/Rows ====================== */
 
 function SetChip({
   game, shortId, pieces, map,
 }: {
   game: GameKey | null | undefined;
-  shortId: string; // อาจเป็นชื่อเต็ม/ย่อ
+  shortId: string;
   pieces?: number;
   map: Record<string, string>;
 }) {
   const icon = getSetIconPath(game, shortId, map);
-  const name = pickFullName(game, shortId, map); // ✅ ชื่อเต็ม
+  const name = fullSetName(shortId, map);
   return (
     <div className="flex items-center gap-2 whitespace-nowrap">
       {icon && (
@@ -349,57 +282,45 @@ function SetChip({
   );
 }
 
-// แถวแบบ HSR: แสดง 2 เซ็ตเคียงกัน (ไอคอน+ชื่อ) แล้วคั่นด้วย "+"
+/** แถวแบบ HSR: Cavern Relic – Planar Ornament (เช่น "GoBS-SSS") */
 function HsrPairRow({
-  left, right, map, piecesText,
+  combo, map, piecesText,
 }: {
-  left: string;
-  right: string;
+  combo: string;                 // เช่น 'GoBS-SSS'
   map: Record<string, string>;
-  piecesText?: string; // เช่น "4+2 ชิ้น"
+  piecesText?: string;           // เช่น '4+2 ชิ้น' (optional)
 }) {
-  const leftIcon = getSetIconPath('hsr', left, map);
-  const rightIcon = getSetIconPath('hsr', right, map);
-  const leftName = pickFullName('hsr', left, map);
-  const rightName = pickFullName('hsr', right, map);
+  const [relicRaw, planarRaw] = combo.split('-').map(s => s.trim());
+  const relicIcon = getSetIconPath('hsr', relicRaw, map);
+  const planarIcon = getSetIconPath('hsr', planarRaw, map);
+  const relicName = fullSetName(relicRaw, map);
+  const planarName = fullSetName(planarRaw, map);
 
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      {/* ซ้าย */}
-      {leftIcon && (
-        <div className="flex items-center gap-2">
-          <Image
-            src={leftIcon}
-            alt={leftName}
-            width={28}
-            height={28}
-            className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
-            onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-          />
-          <span className="text-gray-100">{leftName}</span>
-        </div>
+    <div className="flex items-center gap-3 whitespace-nowrap">
+      {relicIcon && (
+        <Image
+          src={relicIcon}
+          alt={relicName}
+          width={28}
+          height={28}
+          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
+          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+        />
       )}
+      <span className="text-gray-100">{relicName}</span>
 
-      {/* เครื่องหมาย + */}
-      <span className="px-1 text-gray-300">+</span>
-
-      {/* ขวา */}
-      {rightIcon && (
-        <div className="flex items-center gap-2">
-          <Image
-            src={rightIcon}
-            alt={rightName}
-            width={28}
-            height={28}
-            className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0"
-            onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-          />
-          <span className="text-gray-100">{rightName}</span>
-        </div>
+      {planarIcon && (
+        <Image
+          src={planarIcon}
+          alt={planarName}
+          width={28}
+          height={28}
+          className="rounded-md ring-1 ring-white/15 bg-white/10 object-contain flex-shrink-0 ml-4"
+          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+        />
       )}
-
-      {/* จำนวนชิ้น (ถ้ามี) */}
-      {piecesText && <span className="ml-2 text-gray-300">{piecesText}</span>}
+      <span className="text-gray-100">{planarName}{piecesText ? ` ${piecesText}` : ''}</span>
     </div>
   );
 }
@@ -438,33 +359,24 @@ function formatAdviceWithIcons(
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i].trim();
 
-      // ---------- HSR โหมดคู่ ----------
+      // HSR: "Relic-Planar 4 ชิ้น" หรือไม่มีจำนวน
       if (game === 'hsr') {
-        // รูปแบบ "AAA + BBB (2/4/6 ชิ้น)" หรือ "AAA-BBB 6 ชิ้น"
-        const mPlus = p.match(/^(.+?)\s*\+\s*(.+?)(?:\s+(\d+)\s*ชิ้น)?$/);
-        const mDash = p.match(/^(.+?)\s*-\s*(.+?)(?:\s+(\d+)\s*ชิ้น)?$/);
-        if (mPlus || mDash) {
-          const mm = (mPlus || mDash)!;
-          const left = mm[1].trim();
-          const right = mm[2].trim();
-          const pieces = mm[3] ? parseInt(mm[3], 10) : undefined;
-          const piecesText = pieces ? '4+2 ชิ้น' : undefined;
-          row.push(<HsrPairRow key={`pair-${left}-${right}-${i}`} left={left} right={right} map={map} piecesText={piecesText} />);
-          continue;
-        }
+        const mCombo = p.match(/^([A-Za-z0-9\-]+)\s*(?:(\d+)\s*ชิ้น)?$/);
+        if (mCombo) {
+          const token = mCombo[1];
+          const hasDash = token.includes('-');
+          const pieces = mCombo[2] ? parseInt(mCombo[2], 10) : undefined;
 
-        // เดี่ยว: "XXX 2 ชิ้น" หรือ "ชื่อเต็ม 4 ชิ้น"
-        const mSingleHSR = p.match(/^(.+?)\s+(\d+)\s*ชิ้น$/);
-        if (mSingleHSR) {
-          const token = mSingleHSR[1];
-          const pieces = parseInt(mSingleHSR[2], 10);
-          row.push(<SetChip key={`${token}-${i}`} game={game} shortId={token} pieces={pieces} map={map} />);
-          continue;
+          if (hasDash) {
+            const piecesText = pieces ? '4+2 ชิ้น' : undefined;
+            row.push(<HsrPairRow key={`pair-${token}-${i}`} combo={token} map={map} piecesText={piecesText} />);
+            continue;
+          }
         }
       }
 
-      // ---------- ปกติ (GI และ HSR เดี่ยว) ----------
-      const m = p.match(/^(.+?)\s+(\d+)\s*ชิ้น$/);  // ยอมรับชื่อเต็มที่มีช่องว่าง
+      // ปกติ (GI และ HSR เดี่ยว): "XXX 4 ชิ้น" (รองรับชื่อเต็มที่มีช่องว่าง)
+      const m = p.match(/^(.+?)\s+(\d+)\s*ชิ้น$/);
       if (m) {
         const shortId = m[1];
         const pieces = parseInt(m[2], 10);
@@ -592,16 +504,41 @@ export default function Page() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
-  /* balance */
-  const [balance, setBalance] = useState(0);
+  // สมัครสมาชิก
+  const [showRegister, setShowRegister] = useState(false);
+  const [regUsername, setRegUsername] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regTel, setRegTel] = useState('');
+  const [regEmail, setRegEmail] = useState('');
 
-  const requestBalance = async () => {
-    if (!loggedInUser) return;
+  const handleRegister = async () => {
+    if (!regUsername || !regPassword) {
+      setMessages((p) => [...p, { role: 'bot', text: 'กรุณากรอก Username/Password ให้ครบค่ะ' }]);
+      return;
+    }
     try {
-      const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
+      const r = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: regUsername.trim(),
+          password: regPassword,
+          tel: regTel || undefined,
+          email: regEmail || undefined,
+        }),
+      });
       const j = await r.json();
-      if (j?.ok) setBalance(Number(j.balance) || 0);
-    } catch {}
+      if (r.ok && j?.ok) {
+        setMessages((p) => [...p, { role: 'bot', text: 'สมัครสมาชิกสำเร็จ! ลองเข้าสู่ระบบได้เลยค่ะ' }]);
+        setUsername(regUsername.trim());
+        setPassword(regPassword);
+        setShowRegister(false);
+      } else {
+        setMessages((p) => [...p, { role: 'bot', text: j?.message || 'สมัครไม่สำเร็จค่ะ' }]);
+      }
+    } catch {
+      setMessages((p) => [...p, { role: 'bot', text: 'เกิดข้อผิดพลาดระหว่างสมัครสมาชิกค่ะ' }]);
+    }
   };
 
   /* ------------ set name maps (สำหรับไอคอน/ชื่อเต็ม) ------------ */
@@ -683,6 +620,11 @@ export default function Page() {
     if (isAutoScroll && chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [messages, isAutoScroll, haveSlots.length]);
 
+  /* ====== Realtime balance (SWR) ====== */
+  const { balance, isLoading: balanceLoading, mutate: mutateBalance } = useBalance(
+    isLoggedIn ? loggedInUser : null
+  );
+
   /* ------------ push helpers ------------ */
   const pushUser = (text: string) => setMessages((p) => [...p, { role: 'user', text }]);
 
@@ -763,14 +705,12 @@ export default function Page() {
     // === ตรวจจับ state รอ UID ===
     if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
       setAwaitingUID(true);
-      // เมื่อขอ UID ไม่ควรมีเมนูตัวเลขค้างอยู่
       setPendingNumberRange(null);
       setMenuMap({});
       setDynamicQR([]);
       return;
     }
 
-    // ถ้าไปสเตจสรุป/ยืนยัน/จ่ายเงินแล้ว ให้ถือว่าพ้น state รอ UID
     if (/สรุปรายการ|กรุณากดยืนยัน|ยอดชำระ|รับคำยืนยันแล้ว/i.test(reply)) {
       setAwaitingUID(false);
     }
@@ -805,11 +745,11 @@ export default function Page() {
 
   /* ------------ ย้าย flow ยืนยันมาอยู่ส่วนกลาง ------------ */
   const processConfirm = async () => {
-    // 1) ขอให้บอทสรุปรายการก่อน (ให้บับเบิลขึ้น)
+    // 1) ขอให้บอทสรุปรายการก่อน
     const res = await callAPI('ยืนยัน', loggedInUser);
     pushBot(res);
 
-    // 2) อ่านยอดชำระล่าสุด แล้วตัดเงินในกระเป๋าก่อน (พอแล้วจบ, ไม่พอค่อยโอนเพิ่ม)
+    // 2) อ่านยอดชำระล่าสุด แล้วตัดเงินในกระเป๋าก่อน
     try {
       const expected = getExpectedAmountFromMessages([
         ...messages,
@@ -828,17 +768,30 @@ export default function Page() {
       const remain = Math.max(0, Number((expected - use).toFixed(2)));
 
       if (use > 0) {
+        // ✅ optimistic update: หักก่อนบน UI ให้เด้งไว
+        mutateBalance((prev) => ({ balance: Math.max(0, (prev?.balance ?? 0) - use) }), {
+          revalidate: false,
+          optimisticData: { balance: Math.max(0, balance - use) },
+        });
+
         const r = await fetch('/api/user/update-balance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: loggedInUser, amount: -use }),
         });
         const j = await r.json().catch(() => ({}));
-        if (j?.ok) setBalance(Number(j.balance ?? have - use));
+
+        if (!j?.ok) {
+          // rollback ถ้า fail
+          await mutateBalance();
+        } else {
+          // sync กับ DB
+          mutateBalance();
+        }
         pushBotMsg(`หักจากกระเป๋าแล้ว ${use.toFixed(2)} บาท`);
       }
 
-      setPaidSoFar(use); // ให้ขั้นตอนสลิปรู้ว่าเราจ่ายไปแล้วเท่าไร
+      setPaidSoFar(use);
 
       if (remain === 0) {
         setShowPaidButton(false);
@@ -863,14 +816,14 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    // ถ้ากำลังรอ UID อยู่ ให้พยายามกรอก UID แบบ robust (แก้เคส "ไม่เข้าใจ")
+    // ถ้ากำลังรอ UID อยู่ ให้พยายามกรอก UID แบบ robust
     if (awaitingUID && /^\d{6,12}$/.test(original)) {
       const data = await robustSendUID(original, loggedInUser);
       pushBot(data);
       return;
     }
 
-    // ถ้า user พิมพ์เป็นเลข และเรามีเมนู -> map เป็นข้อความ option ให้ backend เข้าใจง่ายขึ้น
+    // ถ้า user พิมพ์เป็นเลข และเรามีเมนู
     if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
       const n = parseInt(original, 10);
       if (
@@ -950,7 +903,7 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    // ✅ กรณีกดปุ่ม "ยืนยัน" ให้วิ่งเข้าฟังก์ชันเดียวกัน
+    // ✅ ยืนยัน
     if (value.trim() === 'ยืนยัน') {
       await processConfirm();
       return;
@@ -1047,7 +1000,8 @@ export default function Page() {
         setConfirmMode(false);
         pushBotMsg('ชำระเงินเสร็จสิ้น ✅ ขอบคุณที่ใช้บริการค่ะ');
         setTimeout(() => pushBotMsg('ขอบคุณที่ใช้บริการค่ะ 💖'), 1800);
-        requestBalance();
+        // sync balance เผื่อมีเงินทอน/เครดิตอื่น
+        mutateBalance();
       } else if (result.status === 'under') {
         const received = Number(result.actual || 0);
         const diff = Number(result.diff).toFixed(2);
@@ -1063,14 +1017,24 @@ export default function Page() {
         setShowPaidButton(true);
       } else if (result.status === 'over') {
         const diff = Number(result.diff || 0);
-        // โอนเกิน → เก็บส่วนเกินเข้ากระเป๋า
+
+        // ✅ optimistic เติมเข้ากระเป๋าทันทีบน UI
+        mutateBalance((prev) => ({ balance: (prev?.balance ?? 0) + diff }), {
+          revalidate: false,
+          optimisticData: { balance: balance + diff },
+        });
+
         const r = await fetch('/api/user/update-balance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: loggedInUser, amount: diff }),
         });
         const j = await r.json().catch(() => ({}));
-        if (j?.ok) setBalance(Number(j.balance ?? balance) || balance + diff);
+        if (!j?.ok) {
+          await mutateBalance(); // rollback/sync
+        } else {
+          mutateBalance(); // sync กับ DB
+        }
 
         pushBotMsg(`โอนเกินยอด (เกิน : ${diff.toFixed(2)} บาท)\nเก็บไว้ในกระเป๋าเงินของคุณแล้วค่ะ`);
         setShowPaidButton(false);
@@ -1078,7 +1042,6 @@ export default function Page() {
         setConfirmMode(false);
         setPaidSoFar(0);
         setTimeout(() => pushBotMsg('ขอบคุณที่ใช้บริการค่ะ 💖'), 1800);
-        requestBalance();
       } else {
         pushBotMsg('อ่านยอดจากสลิปไม่สำเร็จค่ะ 🥲');
       }
@@ -1198,17 +1161,20 @@ export default function Page() {
                 บัญชีที่เข้าสู่ระบบ: <span className="font-semibold">{loggedInUser}</span>
               </p>
               <p className="text-emerald-300 mt-2">
-                ยอดคงเหลือในกระเป๋า: <span className="font-semibold">{balance.toFixed(2)}</span> บาท
+                ยอดคงเหลือในกระเป๋า:{' '}
+                <span className="font-semibold">
+                  {balanceLoading ? '...' : balance.toFixed(2)}
+                </span>{' '}
+                บาท
               </p>
             </div>
             <div className="flex gap-3 justify-center">
-              <GlassPill color="indigo" onClick={requestBalance}>รีเฟรชยอด</GlassPill>
+              {/* ปุ่มรีเฟรชถูกถอดออกแล้ว เพราะเป็น realtime */}
               <GlassPill
                 color="indigo"
                 onClick={() => {
                   setIsLoggedIn(false);
                   setLoggedInUser('');
-                  setBalance(0);
                   setMessages([{ role: 'bot', text: 'คุณได้ออกจากระบบแล้วค่ะ' }]);
                   setIsOpen(false);
                   setDynamicQR([]); setConfirmMode(false);
@@ -1225,44 +1191,116 @@ export default function Page() {
           </>
         ) : (
           <>
-            <div className="text-center mb-6">
-              <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
-            </div>
-            <div className="mb-4">
-              <label className="block text-sm mb-2 opacity-80">Username:</label>
-              <input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                placeholder="ใส่ username..."
-              />
-            </div>
-            <div className="mb-6">
-              <label className="block text-sm mb-2 opacity-80">Password:</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
-                placeholder="ใส่ password..."
-              />
-            </div>
-            <div className="flex justify-center">
-              <GlassPill
-                color="indigo"
-                className="w-full justify-center"
-                onClick={async () => {
-                  // (เดโม) Login ตรง ๆ และโหลดยอดคงเหลือ
-                  setIsLoggedIn(true);
-                  setLoggedInUser(username || 'user');
-                  setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
-                  setIsOpen(true);
-                  setTimeout(requestBalance, 200);
-                }}
+            {/* สวิตช์ เข้าสู่ระบบ / สมัครสมาชิก */}
+            <div className="flex justify-center mb-4 gap-2">
+              <button
+                className={`px-3 py-1 rounded-full text-sm ${!showRegister ? 'bg-white/15 ring-1 ring-white/20' : 'hover:bg-white/10'}`}
+                onClick={() => setShowRegister(false)}
               >
                 เข้าสู่ระบบ
-              </GlassPill>
+              </button>
+              <button
+                className={`px-3 py-1 rounded-full text-sm ${showRegister ? 'bg-white/15 ring-1 ring-white/20' : 'hover:bg-white/10'}`}
+                onClick={() => setShowRegister(true)}
+              >
+                สมัครสมาชิก
+              </button>
             </div>
+
+            {!showRegister ? (
+              // ===== ฟอร์มล็อกอิน =====
+              <>
+                <div className="text-center mb-6">
+                  <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm mb-2 opacity-80">Username:</label>
+                  <input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ใส่ username..."
+                  />
+                </div>
+                <div className="mb-6">
+                  <label className="block text-sm mb-2 opacity-80">Password:</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ใส่ password..."
+                  />
+                </div>
+                <div className="flex justify-center">
+                  <GlassPill
+                    color="indigo"
+                    className="w-full justify-center"
+                    onClick={async () => {
+                      // (เดโม) Login ตรง ๆ — เพียงตั้งสถานะ, SWR จะเริ่มดึงยอดเอง (ไม่ต้องเรียก requestBalance)
+                      setIsLoggedIn(true);
+                      setLoggedInUser(username || 'user');
+                      setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' }]);
+                      setIsOpen(true);
+                    }}
+                  >
+                    เข้าสู่ระบบ
+                  </GlassPill>
+                </div>
+              </>
+            ) : (
+              // ===== ฟอร์มสมัครสมาชิก =====
+              <>
+                <div className="text-center mb-6">
+                  <p className="text-lg">สมัครสมาชิก</p>
+                </div>
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">Username :</label>
+                  <input
+                    value={regUsername}
+                    onChange={(e) => setRegUsername(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ตั้ง username..."
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">Password :</label>
+                  <input
+                    type="password"
+                    value={regPassword}
+                    onChange={(e) => setRegPassword(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ตั้ง password..."
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">เบอร์โทร :</label>
+                  <input
+                    value={regTel}
+                    onChange={(e) => setRegTel(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="080xxxxxxx"
+                  />
+                </div>
+                <div className="mb-6">
+                  <label className="block text-sm mb-2 opacity-80">อีเมล :</label>
+                  <input
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="you@example.com"
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <GlassPill color="green" className="flex-1 justify-center" onClick={handleRegister}>
+                    สมัครสมาชิก
+                  </GlassPill>
+                  <GlassPill color="gray" className="flex-1 justify-center" onClick={() => setShowRegister(false)}>
+                    กลับไปล็อกอิน
+                  </GlassPill>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -1417,7 +1455,7 @@ export default function Page() {
             <div className="p-2 flex items-center gap-2 bg-transparent rounded-b-2xl">
               <input
                 type="text"
-                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 835235056)' : 'พิมพ์เลขเลือกแพ็กเกจได้เลย (เช่น 2) หรือพิมพ์ข้อความ'}
+                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 800000000)' : 'พิมพ์ตรงนี้เลยจ้าา'}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 className="w-full rounded-full px-4 py-2 text-gray-100 bg-white/10 backdrop-blur-md ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"

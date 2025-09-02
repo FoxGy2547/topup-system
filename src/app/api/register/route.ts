@@ -1,31 +1,40 @@
 // /src/app/api/register/route.ts
-import { NextResponse } from 'next/server';
-import mysql from 'mysql2/promise';
+import { NextRequest, NextResponse } from 'next/server';
+import mysql, { RowDataPacket } from 'mysql2/promise';
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { username, password, tel, email } = body || {};
 
     if (!username || !password) {
-      return NextResponse.json({ message: 'username/password required' }, { status: 400 });
+      return NextResponse.json(
+        { message: 'username/password required' },
+        { status: 400 }
+      );
     }
 
     const conn = await mysql.createConnection({
-      host: process.env.DB_HOST || '127.0.0.1',
-      user: process.env.DB_USER || 'root',
-      password: process.env.DB_PASS || '',
-      database: process.env.DB_NAME || 'chatbot_db',
+      host: process.env.DB_HOST || 'sql12.freesqldatabase.com',
+      user: process.env.DB_USER || 'sql12796984',
+      password: process.env.DB_PASS || 'n72gyyb4KT',
+      database: process.env.DB_NAME || 'sql12796984',
     });
 
     // ตรวจซ้ำ username
-    const [rows] = await conn.execute('SELECT id FROM users WHERE username = ?', [username]);
-    if (Array.isArray(rows) && rows.length > 0) {
+    const [rows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM users WHERE username = ?',
+      [username]
+    );
+    if (rows.length > 0) {
       await conn.end();
-      return NextResponse.json({ message: 'Username นี้ถูกใช้แล้ว' }, { status: 409 });
+      return NextResponse.json(
+        { message: 'Username นี้ถูกใช้แล้ว' },
+        { status: 409 }
+      );
     }
 
-    // แทรกข้อมูล (ตามคอลัมน์ในรูป)
+    // แทรกข้อมูล
     await conn.execute(
       'INSERT INTO users (username, password, tel, email) VALUES (?, ?, ?, ?)',
       [username, password, tel || null, email || null]
@@ -33,7 +42,8 @@ export async function POST(req: Request) {
 
     await conn.end();
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ message: e?.message || 'error' }, { status: 500 });
+  } catch (_e: unknown) {
+    const msg = _e instanceof Error ? _e.message : 'error';
+    return NextResponse.json({ message: msg }, { status: 500 });
   }
 }
