@@ -46,7 +46,7 @@ async function resolvePaths() {
     : cdn.coreNoSimd;
 
   // lang base (โฟลเดอร์)
-  const langBase = (await ok(`${local.langBase}/eng.traineddata.gz`))
+  const langBase = (await ok(`${local.langBase}/eng.traineddata`))
     ? local.langBase
     : cdn.langBase;
 

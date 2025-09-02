@@ -3,25 +3,28 @@ import { ocrWithFallback } from '@/lib/tess';
 
 export type GameKey = 'gi' | 'hsr';
 
+/* ====================== Types ====================== */
 export type Stat = { name: string; value: string };
 export type GearItem = {
-  url: string;
-  piece?: string | null;
-  setName?: string | null;
-  mainStat?: Stat | null;
-  substats?: Stat[];
+  url?: string;
+  piece: GiSlot | HsrSlot;
+  setName: string | null;
+  mainStat: Stat | null;
+  substats: Stat[];
 };
 
-/* ====================== Normalize helpers ====================== */
+export const GI_SLOTS = ['Flower', 'Plume', 'Sands', 'Goblet', 'Circlet'] as const;
+export const HSR_SLOTS = ['Head', 'Hands', 'Body', 'Feet', 'Planar Sphere', 'Link Rope'] as const;
+export type GiSlot = (typeof GI_SLOTS)[number];
+export type HsrSlot = (typeof HSR_SLOTS)[number];
 
+/* ====================== Normalize helpers ====================== */
 const THAI_DIGITS = '๐๑๒๓๔๕๖๗๘๙';
 const toArabic = (s: string) =>
-  [...(s || '')]
-    .map((c) => {
-      const i = THAI_DIGITS.indexOf(c);
-      return i >= 0 ? String(i) : c;
-    })
-    .join('');
+  [...(s || '')].map(c => {
+    const i = THAI_DIGITS.indexOf(c);
+    return i >= 0 ? String(i) : c;
+  }).join('');
 
 // ให้ % เป็นรูปเดียว และตัดช่องว่างหน้า %
 const normalizePercentChars = (s: string) => s.replace(/[％﹪]/g, '%').replace(/\s+%/g, '%');
@@ -34,18 +37,17 @@ const splitlines = (s: string) =>
     .replace(/，/g, ',')
     .replace(/[•·●○・*]/g, '•')
     .split(/\r?\n/)
-    .map((x) => x.replace(/[ \t\f\v]+/g, ' ').trim())
+    .map(x => x.replace(/[ \t\f\v]+/g, ' ').trim())
     .filter(Boolean);
 
 /* ====================== Dictionaries ====================== */
-
 const STAT_MAP: Record<string, string> = {
-  // GI/ทั่วไป (TH -> EN)
+  // GI / TH → EN
   'พลังชีวิต': 'HP',
   'พลังโจมตี': 'ATK',
   'พลังป้องกัน': 'DEF',
   'ความชำนาญธาตุ': 'Elemental Mastery',
-  'อัตราการฟื้นฟูพลังงาน': 'Energy Recharge',
+  'อัตราการฟื้นฟูพลังาน': 'Energy Recharge',
   'การฟื้นฟูพลังงาน': 'Energy Recharge',
   'อัตราคริติคอล': 'CRIT Rate',
   'อัตราคริ': 'CRIT Rate',
@@ -65,6 +67,7 @@ const STAT_MAP: Record<string, string> = {
   'โบนัสความเสียหายลม': 'Anemo DMG Bonus',
   'โบนัสความเสียหายหิน': 'Geo DMG Bonus',
   'โบนัสความเสียหายหญ้า': 'Dendro DMG Bonus',
+
   // HSR
   'อัตราติดเอฟเฟกต์': 'Effect Hit Rate',
   'ต้านทานเอฟเฟกต์': 'Effect RES',
@@ -77,18 +80,13 @@ const STAT_MAP: Record<string, string> = {
   'ผลการทำลาย': 'Break Effect',
 };
 
-const GI_SLOTS = ['Flower', 'Plume', 'Sands', 'Goblet', 'Circlet'] as const;
-const HSR_SLOTS = ['Head', 'Hands', 'Body', 'Feet', 'Planar Sphere', 'Link Rope'] as const;
-export type GiSlot = (typeof GI_SLOTS)[number];
-export type HsrSlot = (typeof HSR_SLOTS)[number];
-
 const PIECE_MAP_GI: Record<string, GiSlot> = {
   'flower of life': 'Flower',
   'plume of death': 'Plume',
   'sands of eon': 'Sands',
   'goblet of eonothem': 'Goblet',
   'circlet of logos': 'Circlet',
-  // TH
+  // TH (หยาบ ๆ)
   'ดอกไม้': 'Flower',
   'ขนนก': 'Plume',
   'ทราย': 'Sands',
@@ -115,17 +113,20 @@ const PIECE_MAP_HSR: Record<string, HsrSlot> = {
   'โซ่': 'Link Rope',
 };
 
+function fuzzyRegex(s: string) {
+  return new RegExp(s.split('').map(ch => (/\s/.test(ch) ? ch : `${ch}\\s*`)).join(''), 'gi');
+}
+
 function normalizeStatWords(line: string): string {
-  const fuzzy = (s: string) => s.split('').map((ch) => (/\s/.test(ch) ? ch : `${ch}\\s*`)).join('');
   let s = normalizePercentChars(toArabic(line));
 
-  // map คำไทย→EN แบบยอมเว้นวรรคผิด ๆ
+  // map คำไทย → EN (ทนช่องว่างผิด ๆ)
   for (const [th, en] of Object.entries(STAT_MAP)) {
-    const re = new RegExp(fuzzy(th), 'gi');
+    const re = fuzzyRegex(th);
     if (re.test(s)) s = s.replace(re, en);
   }
 
-  // HSR ไทยที่เขียนปนอังกฤษ
+  // HSR ไทยปนอังกฤษ
   s = s.replace(/(?:dmg|ดาเมจ)\s*คริ[ตท]?คอ?ล?/gi, 'CRIT DMG');
   s = s.replace(/อัตรา\s*คริ(ติคอล)?/gi, 'CRIT Rate');
 
@@ -139,16 +140,15 @@ function normalizeStatWords(line: string): string {
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
-const normalizeLinesToEN = (lines: string[]) => lines.map((l) => normalizeStatWords(l));
+const normalizeLinesToEN = (lines: string[]) => lines.map(l => normalizeStatWords(l));
 
 /* ====================== Piece detection ====================== */
-
 function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
   const joined = linesEN.join(' ').toLowerCase();
   for (const [k, v] of Object.entries(PIECE_MAP_GI)) {
     if (joined.includes(k.toLowerCase())) return v;
   }
-  // Fallback ด้วยค่าคงที่
+  // Fallback ตามค่าคงที่ที่โผล่บ่อย
   if (/(^|\s)4780(\s|$)/.test(joined)) return 'Flower';
   if (/(^|\s)311(\s|$)/.test(joined)) return 'Plume';
   return null;
@@ -159,13 +159,13 @@ function detectPieceHSR(linesEN: string[]): HsrSlot | null {
   for (const [k, v] of Object.entries(PIECE_MAP_HSR)) {
     if (joined.includes(k.toLowerCase())) return v;
   }
+  // Fallback
   if (/\bHP\b\s*705\b/i.test(joined)) return 'Head';
   if (/\bATK\b\s*352\b/i.test(joined)) return 'Hands';
   return null;
 }
 
 /* ====================== Main/Sub parsing ====================== */
-
 // รายชื่อค่าสเตตที่รองรับ
 const MAIN_NAMES = [
   'HP','ATK','DEF',
@@ -176,13 +176,14 @@ const MAIN_NAMES = [
   // HSR
   'Effect Hit Rate','Effect RES','SPD','Break Effect','Energy Regeneration Rate',
 ];
-
 const NAME_WORD_RE = new RegExp(`\\b(${MAIN_NAMES.map(n => n.replace(/ /g,'\\s+')).join('|')})\\b`, 'i');
 const MAIN_NAME_FIRST = new RegExp(`\\b(${MAIN_NAMES.map(n => n.replace(/ /g,'\\s+')).join('|')})\\b\\s*:?\\s*([0-9][\\d,.]*\\s*%?)`, 'i');
 const MAIN_NUM_FIRST  = new RegExp(`([0-9][\\d,.]*\\s*%?)\\s*\\b(${MAIN_NAMES.map(n => n.replace(/ /g,'\\s+')).join('|')})\\b`, 'i');
 const NUM_FLEX = /([0-9][\d.,]*\s*%?)/;
 
 type Cand = { name: string; value: string; lineIdx: number; bullet: boolean; inHeader: boolean };
+
+const bulletStart = /^\s*[•\-·●○・*]/;
 
 function plausibleGIMain(name: string, value: string, piece: GiSlot | null): boolean {
   const isPct = /%$/.test(value);
@@ -207,25 +208,24 @@ function plausibleGIMain(name: string, value: string, piece: GiSlot | null): boo
     if (isElem) return isPct && v >= 40 && v <= 58;
     if (isPhys) return isPct && v >= 55 && v <= 70;
     if (isBasic) return isPct && v >= 40 && v <= 58;
-    if (isPct && v < 15) return false; // กันตัวเลข sub เล็ก ๆ
+    if (isPct && v < 15) return false;
   }
   return true;
 }
 
 function extractMainStatSmart(linesENIn: string[], piece: GiSlot | HsrSlot | null, game: GameKey): Stat | null {
   const lines = linesENIn.map((x) => normalizeStatWords(x));
-  const bulletStart = /^\s*[•\-·●○・*]/;
 
-  // override slot main ตายตัว
+  // Override เหมาชิ้นที่ main ตายตัว
   if (game === 'gi') {
-    if (piece === 'Flower') return { name: 'HP', value: '4780' };
+    if (piece === 'Flower') return { name: 'HP',  value: '4780' };
     if (piece === 'Plume')  return { name: 'ATK', value: '311' };
   } else {
     if (piece === 'Head')  return { name: 'HP',  value: '705' };
     if (piece === 'Hands') return { name: 'ATK', value: '352' };
   }
 
-  // ขอบเขต "หัวการ์ด" = ก่อนถึง +20 หรือบูลเล็ตตัวแรก
+  // หา "หัวการ์ด" = ก่อนถึง +20 หรือ bullet แรก
   let headerEnd = lines.length;
   for (let i = 0; i < lines.length; i++) {
     if (/^\+?\s*20\b/.test(lines[i]) || bulletStart.test(lines[i])) { headerEnd = i; break; }
@@ -239,23 +239,21 @@ function extractMainStatSmart(linesENIn: string[], piece: GiSlot | HsrSlot | nul
   };
 
   const scanRanges: Array<{start:number; end:number; header:boolean}> = [
-    { start: 0, end: Math.min(headLimit, headerEnd), header: true },   // โฟกัสหัวก่อน
-    { start: 0, end: Math.min(headLimit, lines.length), header: false } // เผื่อ OCR แหวก
+    { start: 0, end: Math.min(headLimit, headerEnd), header: true },
+    { start: 0, end: Math.min(headLimit, lines.length), header: false },
   ];
 
   for (const rng of scanRanges) {
     for (let i = rng.start; i < rng.end; i++) {
       const ln = lines[i];
 
-      // name -> value
       let m = ln.match(MAIN_NAME_FIRST);
       if (m) { pushCand(m[1], m[2], i, rng.header); continue; }
 
-      // value -> name
       m = ln.match(MAIN_NUM_FIRST);
       if (m) { pushCand(m[2], m[1], i, rng.header); continue; }
 
-      // ชื่อ/ค่าอยู่คนละบรรทัด (ส่อง 2 บรรทัด)
+      // แยกคนละบรรทัด
       if (rng.header && NAME_WORD_RE.test(ln)) {
         const n = ln.match(NAME_WORD_RE)![1];
         for (let k = 1; k <= 2 && i + k < rng.end; k++) {
@@ -286,7 +284,6 @@ function extractMainStatSmart(linesENIn: string[], piece: GiSlot | HsrSlot | nul
     let plaus = 0;
     const isPct = /%$/.test(c.value);
     const v = parseFloat(c.value.replace('%',''));
-
     if (game === 'gi' && (piece === 'Sands' || piece === 'Goblet' || piece === 'Circlet')) {
       if (isPct) plaus += 6;
       if (!isPct && /Elemental Mastery/i.test(c.name)) plaus += 6;
@@ -296,29 +293,22 @@ function extractMainStatSmart(linesENIn: string[], piece: GiSlot | HsrSlot | nul
       if (isPct) plaus += 4;
     }
     if (!isNaN(v) && !isPct && v <= 60) plaus -= 4;
-
-    // GI domain filter
     if (game === 'gi' && !plausibleGIMain(c.name, c.value, piece as GiSlot | null)) plaus -= 30;
 
     const important = /(DMG Bonus|CRIT|Recharge|Mastery|Effect|Break|SPD|Healing|Regeneration)/i.test(c.name) ? 3 : 0;
     return headerBonus + pos + nobullet + plaus + important;
   };
 
-  // จัดตามคะแนน
   cands.sort((a, b) => score(b) - score(a));
-
-  // ถ้าเป็น GI variable slot แล้วคัดไม่ผ่าน domain ให้ลองหา candidate ถัด ๆ ไปที่ผ่าน
   let winner: Cand | undefined = cands[0];
   if (game === 'gi' && (piece === 'Sands' || piece === 'Goblet' || piece === 'Circlet')) {
     winner = cands.find(c => plausibleGIMain(c.name, c.value, piece as GiSlot | null));
   }
   if (!winner) winner = cands[0];
-
   return { name: winner.name, value: winner.value };
 }
 
 /* ----- Substats ----- */
-
 function uniqStats(subs: Stat[]) {
   const out: Stat[] = [];
   const seen = new Set<string>();
@@ -333,9 +323,7 @@ function uniqStats(subs: Stat[]) {
 
 function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[] {
   const lines = linesENIn.map((x) => normalizeStatWords(x));
-  const bulletStart = /^\s*[•\-·●○・*]/;
 
-  // เริ่มอ่านตั้งแต่บูลเล็ตรายการแรกลงไป (กันลาก main มาปะปน)
   let startIdx = 0;
   for (let i = 0; i < lines.length; i++) {
     if (bulletStart.test(lines[i])) { startIdx = i; break; }
@@ -369,7 +357,6 @@ function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[
     m = line.match(NUM_FIRST);
     if (m) { push({ name: m[2], value: m[1].replace(/,/g, '').replace(/\s+/g, '') }); continue; }
 
-    // ข้ามบรรทัด: ชื่ออยู่บรรทัดนี้ → เลขอยู่บรรทัดถัดไป
     const nameOnly = line.match(NAME_ONLY);
     if (nameOnly && i + 1 < lines.length) {
       const nx = lines[i + 1].replace(bulletStart, '').trim();
@@ -381,40 +368,30 @@ function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[
   return uniqStats(out);
 }
 
-/* ====================== parse GI / HSR ====================== */
-
+/* ====================== Parse & Public OCR ====================== */
 function parseGI(text: string) {
-  const raw = text || '';
-  const lines = splitlines(raw);
+  const lines = splitlines(text || '');
   const linesEN = normalizeLinesToEN(lines);
   const joined = linesEN.join(' ');
 
-  const piece = detectPieceGI(linesEN, raw);
+  const piece = detectPieceGI(linesEN, text) || 'Sands';
   const mainStat = extractMainStatSmart(linesEN, piece, 'gi');
   const substats = extractSubstatsSmart(linesEN, mainStat);
 
   const setGuess =
     joined.match(
-      /(Gladiator.?s Finale|Golden Troupe|Marechaussee Hunter|Noblesse Oblige|Viridescent Venerer|Deepwood Memories|Emblem of Severed Fate|Echoes of an Offering|Husk of Opulent Dreams|Tenacity of the Millelith|Blizzard Strayer|Shimenawa.?s Reminiscence|Heart of Depth)/i
+      /(Gladiator.?s Finale|Golden Troupe|Marechaussee Hunter|Noblesse Oblige|Viridescent Venerer|Deepwood Memories|Emblem of Severed Fate|Echoes of an Offering|Husk of Opulent Dreams|Tenacity of the Millelith|Blizzard Strayer|Shimenawa.?s Reminiscence|Heart of Depth|Crimson Witch of Flames|Ocean-?Hued Clam|Pale Flame|Archaic Petra)/i
     )?.[1] ?? null;
 
-  return {
-    game: 'gi' as const,
-    setName: setGuess,
-    pieceName: piece ?? null,
-    piece,
-    mainStat: mainStat || null,
-    substats,
-  };
+  return { piece, mainStat: mainStat || null, substats, setName: setGuess } as Pick<GearItem, 'piece'|'mainStat'|'substats'|'setName'>;
 }
 
 function parseHSR(text: string) {
-  const raw = text || '';
-  const lines = splitlines(raw);
+  const lines = splitlines(text || '');
   const linesEN = normalizeLinesToEN(lines);
   const joined = linesEN.join(' ');
 
-  const piece = detectPieceHSR(linesEN);
+  const piece = detectPieceHSR(linesEN) || 'Body';
   const mainStat = extractMainStatSmart(linesEN, piece, 'hsr');
   const substats = extractSubstatsSmart(linesEN, mainStat);
 
@@ -423,20 +400,144 @@ function parseHSR(text: string) {
       /(Musketeer of Wild Wheat|Eagle of Twilight Line|Hunter of Glacial Forest|Band of Sizzling Thunder|Genius of Brilliant Stars|Firesmith of Lava-Forging|Knight of Purity Palace|Champion of Streetwise Boxing|Guard of Wuthering Snow|Passerby of Wandering Cloud|Poet of Mourning Collapse|Bone Collection.?s Serene Demesne|The Ashblazing Grand Duke|Longevous Disciple|Messenger Traversing Hackerspace|Pioneer Diver of Dead Waters|Wastelander of Banditry Desert|Prisoner in Deep Confinement|Thief of Shooting Meteor|Sprightly Vonwacq|Space Sealing Station|Fleet of the Ageless|Rutilant Arena|Inert Salsotto|Talia: Kingdom of Banditry|Pan-Galactic Commercial Enterprise)/i
     )?.[1] ?? null;
 
+  return { piece, mainStat: mainStat || null, substats, setName: setGuess } as Pick<GearItem, 'piece'|'mainStat'|'substats'|'setName'>;
+}
+
+export async function ocrGear(file: File | Blob, game: GameKey): Promise<GearItem> {
+  // ใช้ tha+eng เผื่อ UI ไทย/อังกฤษปนกัน
+  const text = await ocrWithFallback(file, 'tha+eng');
+  const parsed = game === 'gi' ? parseGI(text) : parseHSR(text);
   return {
-    game: 'hsr' as const,
-    setName: setGuess,
-    pieceName: piece ?? null,
-    piece,
-    mainStat: mainStat || null,
-    substats,
+    url: '', // หน้าบ้านจะยัด URL พรีวิวเอง
+    piece: parsed.piece as any,
+    setName: parsed.setName || null,
+    mainStat: parsed.mainStat,
+    substats: parsed.substats,
   };
 }
 
-/* ====================== Public API ====================== */
+/* ====================== Aggregate + Advice (GI) ====================== */
+const num = (s?: string | null) => {
+  if (!s) return 0;
+  const m = String(s).match(/-?\d+(?:\.\d+)?/);
+  return m ? parseFloat(m[0]) : 0;
+};
+const isPct = (s?: string | null) => /%/.test(String(s || ''));
 
-export async function ocrGear(file: File, game: GameKey) {
-  // ✅ ใช้ helper เดียวกับฝั่งสลิป: ลอง SIMD → Fallback อัตโนมัติ
-  const text = await ocrWithFallback(file, 'tha+eng');
-  return game === 'gi' ? parseGI(text) : parseHSR(text);
+function canonKey(name: string) {
+  const k = name.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (/^crit( |-)rate|^cr($| )|อัตราคริ|คริติคอลเรต/i.test(k)) return 'cr_pct';
+  if (/^crit( |-)dmg|^cd($| )|คริติคอลดาเมจ|ความแรงคริ/i.test(k)) return 'cd_pct';
+  if (/^energy recharge|^er($| )|ฟื้นฟูพลังงาน/i.test(k)) return 'er_pct';
+  if (/^elemental mastery|^em($| )|ความชำนาญธาตุ/i.test(k)) return 'em';
+  if (/^hp%?$/.test(k)) return isPct(name) ? 'hp_pct' : 'hp_flat';
+  if (/^atk%?$/.test(k)) return isPct(name) ? 'atk_pct' : 'atk_flat';
+  if (/^def%?$/.test(k)) return isPct(name) ? 'def_pct' : 'def_flat';
+  if (/healing bonus/i.test(name)) return 'heal_pct';
+  if (/physical dmg bonus/i.test(name)) return 'phys_pct';
+  if (/pyro dmg bonus/i.test(name)) return 'pyro_pct';
+  if (/hydro dmg bonus/i.test(name)) return 'hydro_pct';
+  if (/cryo dmg bonus/i.test(name)) return 'cryo_pct';
+  if (/electro dmg bonus/i.test(name)) return 'electro_pct';
+  if (/anemo dmg bonus/i.test(name)) return 'anemo_pct';
+  if (/geo dmg bonus/i.test(name)) return 'geo_pct';
+  if (/dendro dmg bonus/i.test(name)) return 'dendro_pct';
+  return '';
+}
+
+export function aggregateGiArtifacts(gear: Partial<Record<GiSlot, GearItem>>) {
+  const out = {
+    hp_flat: 0, atk_flat: 0, def_flat: 0,
+    hp_pct: 0, atk_pct: 0, def_pct: 0,
+    em: 0, er_pct: 0, cr_pct: 0, cd_pct: 0,
+    pyro_pct: 0, hydro_pct: 0, cryo_pct: 0, electro_pct: 0, anemo_pct: 0, geo_pct: 0, dendro_pct: 0,
+    phys_pct: 0, heal_pct: 0,
+  };
+  const add = (name?: string | null, val?: string | null) => {
+    if (!name || !val) return;
+    const key = canonKey(name);
+    if (!key) return;
+    const v = num(val);
+    (out as any)[key] += v;
+  };
+
+  (GI_SLOTS as readonly GiSlot[]).forEach(slot => {
+    const it = gear[slot]; if (!it) return;
+    if (it.mainStat) add(it.mainStat.name, it.mainStat.value);
+    (it.substats || []).forEach(s => add(s.name, s.value));
+  });
+  return out;
+}
+
+export type GiAdvice = {
+  char: string;
+  totals: {
+    hp_flat: number; atk_flat: number; def_flat: number;
+    em: number; er_pct: number; cr_pct: number; cd_pct: number;
+    dmg: { pyro: number; hydro: number; cryo: number; electro: number; anemo: number; geo: number; dendro: number; physical: number };
+  };
+  notes: string[];
+};
+
+export async function analyzeGiArtifacts(char: string, gear: Partial<Record<GiSlot, GearItem>>): Promise<GiAdvice> {
+  const agg = aggregateGiArtifacts(gear);
+  const dmg = {
+    pyro: agg.pyro_pct, hydro: agg.hydro_pct, cryo: agg.cryo_pct, electro: agg.electro_pct,
+    anemo: agg.anemo_pct, geo: agg.geo_pct, dendro: agg.dendro_pct, physical: agg.phys_pct,
+  };
+
+  // ฐานคร่าว ๆ (ให้ตัวเลขดูสมจริงขึ้น): ER 100, CR 5, CD 50
+  const base = { er: 100, cr: 5, cd: 50 };
+
+  const totals = {
+    hp_flat: agg.hp_flat,
+    atk_flat: agg.atk_flat,
+    def_flat: agg.def_flat,
+    em: agg.em,
+    er_pct: base.er + agg.er_pct,
+    cr_pct: base.cr + agg.cr_pct,
+    cd_pct: base.cd + agg.cd_pct,
+    dmg,
+  };
+
+  const notes: string[] = [];
+  const isFurina = /furina/i.test(char);
+
+  // ER
+  if (totals.er_pct < 130) notes.push('Energy Recharge ยังต่ำ (<130%) → หา ER จากซับ/ทรายเพิ่ม');
+  else if (totals.er_pct < 160) notes.push(`Energy Recharge รวม ~${totals.er_pct.toFixed(0)}% พอใช้ได้ ถ้าหมุนสกิลไม่พอ ลองดันไป ~180%`);
+
+  // CR / CD
+  if (totals.cr_pct < 55) notes.push('คริเรตต่ำ (<55%) → ต้องการ CR เพิ่ม');
+  if (totals.cd_pct < 120) notes.push('คริดาเมจยังน้อย (<120%) → หา CD เพิ่มจากซับ/หมวก');
+
+  // ธาตุ/ฟิสิคัล
+  const maxElem = Object.entries(dmg).sort((a,b)=>b[1]-a[1])[0];
+  if (!maxElem || (maxElem[1] < 15)) {
+    if (isFurina) notes.push('ยังไม่มีโบนัสธาตุเด่น → ลอง Goblet Hydro DMG (แทน HP%) จะดาเมจขึ้นชัด');
+    else notes.push('ยังไม่มีโบนัสธาตุ/ฟิสิคัล → ใช้ Goblet ธาตุให้ตรงคาแรกเตอร์');
+  }
+  if (isFurina) {
+    const gobletMain = gear.Goblet?.mainStat?.name || '';
+    if (/hp%/i.test(gobletMain) && totals.dmg.hydro < 30) {
+      notes.push('Furina ชอบ Goblet Hydro DMG มากกว่า HP% ถ้าทีมต้องการดาเมจ');
+    }
+  }
+
+  return { char, totals, notes };
+}
+
+export function formatGiAdvice(r: GiAdvice) {
+  const lines = [
+    `ผลคำนวณสำหรับ ${r.char}`,
+    `สรุปรวมจากของ (รวมฐาน CR5%/CD50%/ER100%):`,
+    `• HP +${r.totals.hp_flat} | ATK +${r.totals.atk_flat} | DEF +${r.totals.def_flat}`,
+    `• EM ${r.totals.em} | ER ${r.totals.er_pct.toFixed(1)}% | CR ${r.totals.cr_pct.toFixed(1)}% | CD ${r.totals.cd_pct.toFixed(1)}%`,
+    `• DMG Bonus: Pyro ${r.totals.dmg.pyro}% / Hydro ${r.totals.dmg.hydro}% / Cryo ${r.totals.dmg.cryo}% / Electro ${r.totals.dmg.electro}% / Anemo ${r.totals.dmg.anemo}% / Geo ${r.totals.dmg.geo}% / Dendro ${r.totals.dmg.dendro}% / Phys ${r.totals.dmg.physical}%`,
+  ];
+  if (r.notes.length) {
+    lines.push('ข้อเสนอแนะ:');
+    r.notes.forEach(n => lines.push(`• ${n}`));
+  }
+  return lines.join('\n');
 }

@@ -5,7 +5,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { ocrWithFallback } from '@/lib/tess';
 
+// OCR ชิ้นส่วน + type ของ gear
 import { ocrGear, GearItem, GiSlot, HsrSlot, GameKey } from '@/lib/gear-ocr';
+
+// ✅ ตัวคำนวณรวมสเตต + ข้อแนะนำ (ใหม่)
+import { analyzeGiArtifacts, formatGiAdvice } from '@/lib/gi-calc';
 
 /* ====================== Types ====================== */
 type QuickReply = { label: string; value: string };
@@ -315,6 +319,21 @@ function buildMenuMap(reply: string): Record<number, string> {
     out[idx] = stripPriceSuffix(joined);
   }
   return out;
+}
+
+/* ====================== Character guess (ง่าย ๆ) ====================== */
+// ดึงชื่อคาแรคเตอร์ GI ล่าสุดจากแชทแบบหยาบ ๆ ถ้าเดาไม่ได้ → 'Furina'
+function guessGiCharacterName(msgs: ChatMessage[]): string {
+  const candidates = [
+    'Furina','Neuvillette','Xiangling','Bennett','Yelan','Raiden Shogun','Nahida','Xiao','Hu Tao','Yae Miko',
+    'Kazuha','Ganyu','Kokomi','Yoimiya','Ayaka','Ayato','Tartaglia','Zhongli','Alhaitham','Clorinde','Arlecchino'
+  ];
+  const joined = msgs.slice(-12).map(m => m.text || '').join(' ');
+  for (const name of candidates) {
+    const re = new RegExp(`\\b${name.replace(/ /g,'\\s+')}(?:\\b|$)`, 'i');
+    if (re.test(joined)) return name;
+  }
+  return 'Furina';
 }
 
 /* ====================== Page Component ====================== */
@@ -835,12 +854,13 @@ export default function Page() {
           const head = parsed.setName ? `เซ็ต: ${parsed.setName}` : 'เซ็ต: (อ่านไม่ชัด)';
           const pieceLine = piece ? `ชิ้น: ${piece}` : 'ชิ้น: (ยังเดาไม่ได้)';
           const main = parsed.mainStat ? `Main Stat: ${parsed.mainStat.name} ${parsed.mainStat.value}` : 'Main Stat: -';
-          const subs = parsed.substats.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
+          const subs = parsed.substats?.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
           pushBotMsg([head, pieceLine, main, subs].join('\n'));
 
           const need = GI_SLOTS.filter((s) => !next[s as GiSlot]);
-          if (need.length) pushBotMsg(`รับชิ้นนี้แล้วนะคะ เหลืออีก ${need.length} ชิ้น: ${need.join(', ')}`);
-          else {
+          if (need.length) {
+            pushBotMsg(`รับชิ้นนี้แล้วนะคะ เหลืออีก ${need.length} ชิ้น: ${need.join(', ')}`);
+          } else {
             const ms = GI_SLOTS.map((s) => {
               const it = next[s as GiSlot];
               const mainS = it?.mainStat ? ` | Main: ${it.mainStat.name} ${it.mainStat.value}` : ' | Main: -';
@@ -848,7 +868,18 @@ export default function Page() {
               return `• ${s}: ${setS}${mainS}`;
             }).join('\n');
             pushBotMsg(`สรุป Artifact ครบ 5 ชิ้นแล้วค่ะ ✨\n${ms}`);
+
+            // ✅ คำนวณรวม + ให้คำแนะนำ "อัตโนมัติ" ทันทีเมื่อครบ 5 ชิ้น
+            try {
+              const char = guessGiCharacterName(messages);
+              const report = await analyzeGiArtifacts(char, next);
+              pushBotMsg(formatGiAdvice(report));
+            } catch {
+              // เงียบ ๆ ถ้าพลาด ไม่ให้หลุด error ไปหน้า UI
+            }
           }
+        } else {
+          pushBotMsg('อ่านชนิดชิ้นไม่ชัดค่ะ ลองอัปโหลดใหม่อีกครั้งนะ');
         }
       } else {
         const slot = piece as HsrSlot | undefined;
@@ -865,12 +896,13 @@ export default function Page() {
           const head = parsed.setName ? `เซ็ต: ${parsed.setName}` : 'เซ็ต: (อ่านไม่ชัด)';
           const pieceLine = piece ? `ชิ้น: ${piece}` : 'ชิ้น: (ยังเดาไม่ได้)';
           const main = parsed.mainStat ? `Main Stat: ${parsed.mainStat.name} ${parsed.mainStat.value}` : 'Main Stat: -';
-          const subs = parsed.substats.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
+          const subs = parsed.substats?.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
           pushBotMsg([head, pieceLine, main, subs].join('\n'));
 
           const need = HSR_SLOTS.filter((s) => !next[s as HsrSlot]);
-          if (need.length) pushBotMsg(`รับชิ้นนี้แล้วนะคะ เหลืออีก ${need.length} ชิ้น: ${need.join(', ')}`);
-          else {
+          if (need.length) {
+            pushBotMsg(`รับชิ้นนี้แล้วนะคะ เหลืออีก ${need.length} ชิ้น: ${need.join(', ')}`);
+          } else {
             const ms = HSR_SLOTS.map((s) => {
               const it = next[s as HsrSlot];
               const mainS = it?.mainStat ? ` | Main: ${it.mainStat.name} ${it.mainStat.value}` : ' | Main: -';
@@ -878,7 +910,10 @@ export default function Page() {
               return `• ${s}: ${setS}${mainS}`;
             }).join('\n');
             pushBotMsg(`สรุป Relic ครบ 6 ชิ้นแล้วค่ะ ✨\n${ms}`);
+            // (ถ้าจะทำวิเคราะห์ HSR เพิ่มภายหลัง ค่อยผูกตรงนี้ได้)
           }
+        } else {
+          pushBotMsg('อ่านชนิดชิ้นไม่ชัดค่ะ ลองอัปโหลดใหม่อีกครั้งนะ');
         }
       }
     } catch {
@@ -890,7 +925,7 @@ export default function Page() {
   const currentQR: string[] = confirmMode
     ? ['ยืนยัน', 'ยกเลิก']
     : readyCalc
-      ? ['คำนวณสเตตจากรูป', 'ดูเซ็ตตัวอื่น']
+      ? ['คำนวณสเตตจากรูป', 'ดูเซ็ตตัวอื่น'] // ปุ่มนี้ยังมีไว้กดอัปโหลดชิ้นเพิ่ม แต่ "คำนวณ" จะรันออโต้เมื่อครบชิ้นอยู่แล้ว
       : dynamicQR.length
         ? dynamicQR
         : defaults.map((q) => q.value);
