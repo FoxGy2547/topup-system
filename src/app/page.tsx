@@ -1,3 +1,4 @@
+// /src/app/page.tsx
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -374,6 +375,47 @@ export default function Page() {
       if (j?.ok) setBalance(Number(j.balance) || 0);
     } catch {}
   };
+
+  // ===== Auto-balance polling =====
+  const VIS_POLL_MS = 20_000;     // 20s เมื่อแท็บมองเห็น
+  const HIDDEN_POLL_MS = 120_000; // 120s เมื่อแท็บถูกซ่อน
+  const pollTimerRef = useRef<number | null>(null);
+
+  const stopBalancePolling = () => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  const startBalancePolling = () => {
+    stopBalancePolling();
+    const ms = document.visibilityState === 'visible' ? VIS_POLL_MS : HIDDEN_POLL_MS;
+    // ดึงครั้งแรกทันที
+    requestBalance();
+    pollTimerRef.current = window.setInterval(requestBalance, ms);
+  };
+
+  // เริ่ม/หยุด polling ตามสถานะล็อกอิน + โฟกัส/มองเห็นแท็บ
+  useEffect(() => {
+    if (isLoggedIn && loggedInUser) {
+      startBalancePolling();
+      const onFocus = () => requestBalance();
+      const onVis = () => {
+        startBalancePolling();
+        requestBalance();
+      };
+      window.addEventListener('focus', onFocus);
+      document.addEventListener('visibilitychange', onVis);
+      return () => {
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onVis);
+        stopBalancePolling();
+      };
+    } else {
+      stopBalancePolling();
+    }
+  }, [isLoggedIn, loggedInUser]);
 
   /* ------------ chat ------------ */
   const [isOpen, setIsOpen] = useState(true);
@@ -872,7 +914,7 @@ export default function Page() {
               </p>
             </div>
             <div className="flex gap-3 justify-center">
-              <GlassPill color="indigo" onClick={requestBalance}>รีเฟรชยอด</GlassPill>
+              {/* ลบปุ่มรีเฟรชยอดออกแล้วนะ */}
               <GlassPill
                 color="indigo"
                 onClick={() => {
