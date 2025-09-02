@@ -1,52 +1,84 @@
-// src/lib/tess.ts
-'use client';
-
+// /src/lib/tess.ts
+// Helper สำหรับ OCR ที่จะเลือก path ที่ใช้ได้จริง (Local -> CDN) อัตโนมัติ
 import Tesseract from 'tesseract.js';
 
-type CoreChoice = 'simd' | 'nosimd';
+const ORIGIN =
+  typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : '';
 
-const PATHS = {
-  worker: '/tesseract/worker.min.js',
-  coreSimd: '/tesseract/tesseract-core-simd-lstm.wasm.js',
-  coreNoSimd: '/tesseract/tesseract-core-lstm.wasm.js',
-  langPath: '/tesseract/lang',
+const local = {
+  worker: `${ORIGIN}/tesseract/worker.min.js`,
+  coreSimd: `${ORIGIN}/tesseract/tesseract-core-simd-lstm.wasm.js`,
+  coreNoSimd: `${ORIGIN}/tesseract/tesseract-core-lstm.wasm.js`,
+  langBase: `${ORIGIN}/tesseract/lang`,
 };
 
-function opts(core: CoreChoice) {
-  return {
-    workerPath: PATHS.worker,
-    corePath: core === 'simd' ? PATHS.coreSimd : PATHS.coreNoSimd,
-    langPath: PATHS.langPath,
-    // เปิด progress (จะ log ใน console)
-    logger: (m: any) => {
-      if (m?.status) {
-        // eslint-disable-next-line no-console
-        console.log(`[tess:${core}]`, m.status, m.progress ?? '');
-      }
-    },
-  } as any;
+// CDN สำรอง (ล็อกเวอร์ชันตามแพ็กเกจคุณ: tesseract.js@5.1.1)
+const cdn = {
+  worker: `https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js`,
+  coreSimd: `https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0/tesseract-core-simd-lstm.wasm.js`,
+  coreNoSimd: `https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0/tesseract-core-lstm.wasm.js`,
+  langBase: `https://tessdata.projectnaptha.com/4.0.0_best`, // มี thai/eng เป็น .traineddata.gz
+};
+
+// เช็คว่า URL ใช้งานได้ไหม (HEAD -> 200/OK)
+async function ok(url: string) {
+  try {
+    const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
-/** ลอง OCR: SIMD ก่อน → ถ้า error ค่อย fallback เป็น non-SIMD */
+// เลือก worker/core/lang ที่ใช้ได้จริง
+async function resolvePaths() {
+  // worker
+  const workerPath = (await ok(local.worker)) ? local.worker : cdn.worker;
+  // core (ลอง SIMD ก่อน)
+  const corePath = (await ok(local.coreSimd))
+    ? local.coreSimd
+    : (await ok(local.coreNoSimd))
+    ? local.coreNoSimd
+    : (await ok(cdn.coreSimd))
+    ? cdn.coreSimd
+    : cdn.coreNoSimd;
+
+  // lang base (โฟลเดอร์)
+  const langBase = (await ok(`${local.langBase}/eng.traineddata.gz`))
+    ? local.langBase
+    : cdn.langBase;
+
+  return { workerPath, corePath, langPath: langBase };
+}
+
+/**
+ * OCR ด้วยเส้นทางที่ fallback อัตโนมัติ (Local -> CDN)
+ * @param file รูปภาพ (File/Blob/URL)
+ * @param lang เช่น 'tha+eng'
+ */
 export async function ocrWithFallback(
-  fileOrCanvas: File | HTMLCanvasElement | HTMLImageElement,
+  file: any,
   lang = 'tha+eng'
 ): Promise<string> {
-  const tryOne = async (c: CoreChoice) => {
-    try {
-      const { data } = await Tesseract.recognize(fileOrCanvas as any, lang, opts(c));
-      return data?.text || '';
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error(`[tess:${c}] failed`, e);
-      throw e;
-    }
-  };
+  const { workerPath, corePath, langPath } = await resolvePaths();
 
-  // ถ้าหน้าเพจไม่ได้ crossOriginIsolated ส่วนใหญ่ SIMD จะเด้ง → ลองก่อน แล้วตกมาที่ no-simd
-  try {
-    return await tryOne('simd');
-  } catch {
-    return await tryOne('nosimd');
-  }
+  // ป้องกันโหลดนานเกิน – ตัดหลัง 30s
+  const timeout = new Promise<never>((_, rej) =>
+    setTimeout(() => rej(new Error('OCR timeout')), 30_000)
+  );
+
+  const run = (async () => {
+    const { data } = await Tesseract.recognize(file, lang, {
+      workerPath,
+      corePath,
+      langPath,
+      // ลด noise นิดหน่อย
+      tessedit_char_blacklist: '§¶‘’“”|',
+    } as any);
+    return data.text || '';
+  })();
+
+  return Promise.race([run, timeout]);
 }
