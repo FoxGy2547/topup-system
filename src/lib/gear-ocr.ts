@@ -106,7 +106,8 @@ const PIECE_MAP_HSR: Record<string, HsrSlot> = {
   "hands": "Hands",
   "body": "Body",
   "feet": "Feet",
-  // EN สั้น (OCR ชอบตัดคำ)
+  // EN สั้น (OCR ชอบตัดคำ/เว้นบรรทัด)
+  "planar\\s*sph?ere": "Planar Sphere",
   "sphere": "Planar Sphere",
   "orb": "Planar Sphere",
   "rope": "Link Rope",
@@ -123,7 +124,7 @@ const PIECE_MAP_HSR: Record<string, HsrSlot> = {
   "เชือก": "Link Rope",
 };
 
-// 🔥 คำบอกใบ้จาก “ชื่อไอเท็ม” (เช่น Boots/Gloves/Helmet/Armor/Coat/Mask)
+// noun hints จากชื่อไอเท็ม (เช่น Ceremonial Boots → Feet)
 const PIECE_HINTS_BY_NOUN: Record<HsrSlot, string[]> = {
   Head: ["helmet", "helm", "mask", "headgear", "hat", "หมวก", "หน้ากาก"],
   Hands: ["gloves", "gauntlet", "gauntlets", "handguard", "handguards", "ถุงมือ"],
@@ -182,7 +183,7 @@ function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
   return null;
 }
 
-/** ตัวตรวจ HSR แบบ “โหวตหลายแหล่งข้อมูล” เพื่อลดอาการหลอนกลายเป็น Body */
+/** ตัวตรวจ HSR แบบ “โหวตหลายแหล่งข้อมูล” ให้ Planar Sphere/Link Rope เด่น และลด Feet จาก SPD */
 function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
   const joined = linesEN.join(" \n ").toLowerCase();
   const rawL = normalizePercentChars(toArabic(raw)).toLowerCase();
@@ -197,15 +198,15 @@ function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
   };
   const vote = (slot: HsrSlot, w = 1) => (score[slot] += w);
 
-  // 1) ดิกชันนารี: ทั้งจากข้อความปกติ และ raw text (ให้น้ำหนัก raw มากกว่า)
+  // 1) ดิกชันนารี (ให้ raw น้ำหนักมาก)
   for (const [k, v] of Object.entries(PIECE_MAP_HSR)) {
-    const pat = new RegExp(k.replace(/\s+/g, "\\s+"), "i");
+    const pat = new RegExp(k, "i");
     if (pat.test(joined)) vote(v, 3);
-    if (pat.test(rawL)) vote(v, 4);
+    if (pat.test(rawL)) vote(v, 5);
   }
 
-  // 2) ป้ายบนการ์ด: "Feet +15" / "เท้า +15" / "Planar Sphere +15"
-  const reEN = /(head|hands|body|feet|planar\s*sphere|link\s*rope)\s*\+?\s*\d{1,2}\b/gi;
+  // 2) ป้ายหัวการ์ด: "Planar Sphere +15" / "Link Rope +15" / "เท้า +15"
+  const reEN = /(head|hands|body|feet|planar\s*sph?ere|link\s*rope)\s*\+?\s*\d{1,2}\b/gi;
   const reTH = /(ศีรษะ|หัว|มือ|ลำตัว|เท้า|ลูกแก้ว|ทรงกลม|เชือก(?:พลังงาน)?)\s*\+?\s*\d{1,2}\b/gi;
   const mapEN: Record<string, HsrSlot> = {
     head: "Head",
@@ -227,10 +228,10 @@ function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
     "เชือกพลังงาน": "Link Rope",
   };
   let m: RegExpExecArray | null;
-  while ((m = reEN.exec(rawL))) vote(mapEN[m[1]], 7);
-  while ((m = reTH.exec(rawL))) vote(mapTH[m[1]], 7);
+  while ((m = reEN.exec(rawL))) vote(mapEN[m[1]], 8);
+  while ((m = reTH.exec(rawL))) vote(mapTH[m[1]], 8);
 
-  // 3) “คำนาม” ในชื่อไอเท็ม (เช่น Ceremonial Boots → Feet)
+  // 3) noun hints จากชื่อไอเท็ม (Ceremonial Boots → Feet, …)
   for (const slot of Object.keys(PIECE_HINTS_BY_NOUN) as HsrSlot[]) {
     for (const hint of PIECE_HINTS_BY_NOUN[slot]) {
       const pat = new RegExp(`\\b${hint.replace(/\s+/g, "\\s+")}\\b`, "i");
@@ -243,24 +244,23 @@ function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
   if (/\bhp\b\s*705\b/.test(joined) || (/\b705\b/.test(joined) && /\bhp\b/.test(joined))) vote("Head", 4);
   if (/\batk\b\s*352\b/.test(joined) || (/\b352\b/.test(joined) && /\batk\b/.test(joined))) vote("Hands", 4);
 
-  // SPD มักอยู่ Feet
-  if (/\bspd\b/.test(joined) || /ความเร็ว/.test(rawL)) vote("Feet", 3);
+  // SPD → Feet (ลดน้ำหนักลง เหลือ 1)
+  if (/\bspd\b/.test(joined) || /ความเร็ว/.test(rawL)) vote("Feet", 1);
 
-  // Energy Regeneration / Break Effect มักอยู่ Link Rope
-  if (/(energy\s*regeneration|ฟื้นพลังงาน)/.test(rawL + joined)) vote("Link Rope", 3);
-  if (/(break\s*effect|เอฟเฟกต์ทำลาย)/.test(rawL + joined)) vote("Link Rope", 2);
+  // Break Effect / เอฟเฟกต์ทำลายล้าง → Link Rope (น้ำหนักสูง)
+  if (/(break\s*effect|เอฟเฟกต์ทำลายล้าง|เอฟเฟกต์ทำลาย)\s*/.test(rawL + joined)) vote("Link Rope", 7);
 
-  // DMG ของธาตุ มักเป็น Planar Sphere
+  // Elemental DMG / “เพิ่ม DMG ไฟ/น้ำ/...” → Planar Sphere (น้ำหนักสูง)
   if (
-    /(dmg.*(pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical)|เพิ่ม\s*dmg\s*(ไฟ|น้ำ|ไฟฟ้า|น้ำแข็ง|ลม|หิน|ควอนตัม|จินตภาพ|กายภาพ))/.test(
+    /(dmg\s*(pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical)|เพิ่ม\s*dmg\s*(ไฟ|น้ำ|ไฟฟ้า|น้ำแข็ง|ลม|หิน|ควอนตัม|จินตภาพ|กายภาพ))/.test(
       rawL + joined
     )
   ) {
-    vote("Planar Sphere", 2);
+    vote("Planar Sphere", 7);
   }
 
-  // สรุปเลือกคะแนนสูงสุด (ถ้าเสมอ พยายามหลีกเลี่ยง Body)
-  const order: HsrSlot[] = ["Feet", "Planar Sphere", "Link Rope", "Head", "Hands", "Body"];
+  // สรุปเลือกคะแนนสูงสุด (ผูกคะแนนให้ Planar/Link ชนะ Feet & Body)
+  const order: HsrSlot[] = ["Planar Sphere", "Link Rope", "Feet", "Head", "Hands", "Body"];
   let best: HsrSlot | null = null;
   let bestScore = -1;
   for (const s of order) {
@@ -572,7 +572,7 @@ function parseHSR(text: string) {
   const linesEN = normalizeLinesToEN(lines);
   const joined = linesEN.join(" ");
 
-  // ✅ ใช้ตัวตรวจแบบ “หลายโหวต” + คำบอกใบ้จากชื่อ (Boots/Gloves/Helmet/Armor/Coat/Mask/…)
+  // ใช้ตัวตรวจแบบหลายโหวต + ให้ Planar/Link สำคัญสุด
   const piece = detectPieceHSR(linesEN, text) || "Body";
   const mainStat = extractMainStatSmart(linesEN, piece, "hsr");
   const substats = extractSubstatsSmart(linesEN, mainStat);
@@ -596,7 +596,7 @@ export async function ocrGear(file: File | Blob, game: GameKey): Promise<GearIte
   const text = await ocrWithFallback(file, "tha+eng");
   const parsed = game === "gi" ? parseGI(text) : parseHSR(text);
   return {
-    url: "", // ฝั่งหน้าเว็บจะเติม URL พรีวิวเอง
+    url: "",
     piece: parsed.piece as GiSlot | HsrSlot,
     setName: parsed.setName || null,
     mainStat: parsed.mainStat,
