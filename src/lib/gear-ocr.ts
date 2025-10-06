@@ -1,11 +1,8 @@
-// /src/lib/gear-ocr.ts
+// src/lib/gear-ocr.ts
 import { ocrWithFallback } from "@/lib/tess";
 
-/* =========================================================
- * Types
- * =======================================================*/
+/* ====================== Types ====================== */
 export type GameKey = "gi" | "hsr";
-
 export type Stat = { name: string; value: string };
 export const GI_SLOTS = ["Flower", "Plume", "Sands", "Goblet", "Circlet"] as const;
 export const HSR_SLOTS = ["Head", "Hands", "Body", "Feet", "Planar Sphere", "Link Rope"] as const;
@@ -20,62 +17,14 @@ export type GearItem = {
   substats: Stat[];
 };
 
-/* =========================================================
- * DB helper (ใช้ lib/db ถ้ามี; ไม่งั้นสร้าง pool เอง)
- * =======================================================*/
-import type { RowDataPacket } from "mysql2/promise";
-let dbPool: any = null;
-try {
-  // ถ้าโปรเจกต์มีไฟล์ lib/db.ts ที่ export default pool หรือชื่อ db/pool ก็เอามาใช้ได้เลย
-  // @ts-ignore
-  const maybe = require("@/lib/db");
-  dbPool = maybe.default || maybe.db || maybe.pool || null;
-} catch {}
-if (!dbPool) {
-  // fallback: สร้าง pool เอง (ฝั่ง server เท่านั้น)
-  // ไม่อยากซ้ำซ้อน ก็ชี้ env ชุดเดียวกับ API ของเธอนั่นแหละ
-  const mysql = require("mysql2/promise");
-  dbPool = mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    database: process.env.DB_NAME,
-    connectionLimit: 10,
-  });
-}
-
-type SetRow = { name: string; short_id: string; set_kind?: string };
-const setCache: { gi: SetRow[] | null; hsr: SetRow[] | null } = { gi: null, hsr: null };
-
-async function loadSetCatalog(game: GameKey): Promise<SetRow[]> {
-  if (setCache[game]) return setCache[game]!;
-  const table = game === "gi" ? "items_gi" : "items_hsr";
-  const [rows] = (await dbPool.query(
-    `SELECT name, short_id, set_kind FROM ${table}`
-  )) as [RowDataPacket[], any];
-  setCache[game] = rows.map((r: any) => ({
-    name: String(r.name || ""),
-    short_id: String(r.short_id || ""),
-    set_kind: String(r.set_kind || ""),
-  }));
-  return setCache[game]!;
-}
-
-/* =========================================================
- * Normalize helpers
- * =======================================================*/
+/* ====================== Helpers ====================== */
 const THAI_DIGITS = "๐๑๒๓๔๕๖๗๘๙";
 const toArabic = (s: string) =>
-  [...(s || "")]
-    .map((c) => {
-      const i = THAI_DIGITS.indexOf(c);
-      return i >= 0 ? String(i) : c;
-    })
-    .join("");
-
-const normalizePercentChars = (s: string) =>
-  s.replace(/[％﹪]/g, "%").replace(/\s+%/g, "%");
-
+  [...(s || "")].map(c => {
+    const i = THAI_DIGITS.indexOf(c);
+    return i >= 0 ? String(i) : c;
+  }).join("");
+const normalizePercentChars = (s: string) => s.replace(/[％﹪]/g, "%").replace(/\s+%/g, "%");
 const splitlines = (s: string) =>
   normalizePercentChars(toArabic(s))
     .replace(/\u200b/g, "")
@@ -84,9 +33,8 @@ const splitlines = (s: string) =>
     .replace(/，/g, ",")
     .replace(/[•·●○・*]/g, "•")
     .split(/\r?\n/)
-    .map((x) => x.replace(/[ \t\f\v]+/g, " ").trim())
+    .map(x => x.replace(/[ \t\f\v]+/g, " ").trim())
     .filter(Boolean);
-
 const clean = (s: string) =>
   normalizePercentChars(toArabic(s))
     .toLowerCase()
@@ -95,14 +43,11 @@ const clean = (s: string) =>
     .replace(/[“”]/g, '"')
     .replace(/\s+/g, " ")
     .trim();
-
 const compress = (s: string) => clean(s).replace(/[^a-z0-9ก-๙]/g, "");
 
-/* =========================================================
- * Dictionaries / normalizers
- * =======================================================*/
+/* ====================== Dictionaries ====================== */
 const STAT_MAP: Record<string, string> = {
-  // GI (TH -> EN)
+  // GI
   "พลังชีวิต": "HP",
   "พลังโจมตี": "ATK",
   "พลังป้องกัน": "DEF",
@@ -127,8 +72,7 @@ const STAT_MAP: Record<string, string> = {
   "โบนัสความเสียหายลม": "Anemo DMG Bonus",
   "โบนัสความเสียหายหิน": "Geo DMG Bonus",
   "โบนัสความเสียหายหญ้า": "Dendro DMG Bonus",
-
-  // HSR (TH -> EN)
+  // HSR
   "อัตราติดเอฟเฟกต์": "Effect Hit Rate",
   "ต้านทานเอฟเฟกต์": "Effect RES",
   "ต้านทานสถานะ": "Effect RES",
@@ -153,7 +97,6 @@ const PIECE_MAP_GI: Record<string, GiSlot> = {
   "มงกุฎ": "Circlet",
 };
 
-// สำคัญมาก: ไม่มีอะไรส่งไป Body/Feet จากคำว่า sphere/rope
 const PIECE_MAP_HSR: Record<string, HsrSlot> = {
   "planar\\s*sph?ere": "Planar Sphere",
   "sphere": "Planar Sphere",
@@ -178,15 +121,8 @@ const PIECE_MAP_HSR: Record<string, HsrSlot> = {
 };
 
 function fuzzyRegex(s: string) {
-  return new RegExp(
-    s
-      .split("")
-      .map((ch) => (/\s/.test(ch) ? ch : `${ch}\\s*`))
-      .join(""),
-    "gi"
-  );
+  return new RegExp(s.split("").map(ch => (/\s/.test(ch) ? ch : `${ch}\\s*`)).join(""), "gi");
 }
-
 function normalizeStatWords(line: string): string {
   let s = normalizePercentChars(toArabic(line));
   for (const [th, en] of Object.entries(STAT_MAP)) {
@@ -204,19 +140,16 @@ function normalizeStatWords(line: string): string {
     .replace(/\s{2,}/g, " ")
     .trim();
 }
-const normalizeLinesToEN = (lines: string[]) => lines.map((l) => normalizeStatWords(l));
+const normalizeLinesToEN = (lines: string[]) => lines.map(l => normalizeStatWords(l));
 
-/* =========================================================
- * HSR slot detection — hard-lock label + voting
- * =======================================================*/
+/* ====================== HSR Slot detection ====================== */
 function forceSlotFromLabel(raw: string): HsrSlot | null {
   const s = clean(raw);
   if (/\bplanar\s*sph?ere\b|ลูกแก้ว|ทรงกลม/.test(s)) return "Planar Sphere";
   if (/\blink\s*rope\b|เชือก(?:พลังงาน)?\b|belt\b/.test(s)) return "Link Rope";
   return null;
 }
-
-function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
+function detectPieceGI(linesEN: string[], _raw: string): GiSlot | null {
   const joined = linesEN.join(" ").toLowerCase();
   for (const [k, v] of Object.entries(PIECE_MAP_GI)) {
     if (new RegExp(k, "i").test(joined)) return v;
@@ -225,133 +158,57 @@ function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
   if (/(^|\s)311(\s|$)/.test(joined)) return "Plume";
   return null;
 }
-
 function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
   const joined = clean(linesEN.join(" \n "));
   const rawL = clean(raw);
-
   const score: Record<HsrSlot, number> = {
-    Head: 0,
-    Hands: 0,
-    Body: 0,
-    Feet: 0,
-    "Planar Sphere": 0,
-    "Link Rope": 0,
+    Head: 0, Hands: 0, Body: 0, Feet: 0, "Planar Sphere": 0, "Link Rope": 0,
   };
   const vote = (slot: HsrSlot, w = 1) => (score[slot] += w);
 
-  // dictionary (raw ให้คะแนนสูงกว่า)
   for (const [k, v] of Object.entries(PIECE_MAP_HSR)) {
     const pat = new RegExp(k, "i");
     if (pat.test(joined)) vote(v, 3);
     if (pat.test(rawL)) vote(v, 5);
   }
 
-  // header label EN/TH
-  const reEN = /(head|hands|body|feet|planar\s*sph?ere|link\s*rope)\s*\+?\s*\d{1,2}\b/gi;
-  const reTH = /(ศีรษะ|หัว|มือ|ลำตัว|เท้า|ลูกแก้ว|ทรงกลม|เชือก(?:พลังงาน)?)\s*\+?\s*\d{1,2}\b/gi;
-  const mapEN: Record<string, HsrSlot> = {
-    head: "Head",
-    hands: "Hands",
-    body: "Body",
-    feet: "Feet",
-    "planar sphere": "Planar Sphere",
-    "link rope": "Link Rope",
-  };
-  const mapTH: Record<string, HsrSlot> = {
-    "ศีรษะ": "Head",
-    "หัว": "Head",
-    "มือ": "Hands",
-    "ลำตัว": "Body",
-    "เท้า": "Feet",
-    "ลูกแก้ว": "Planar Sphere",
-    "ทรงกลม": "Planar Sphere",
-    "เชือก": "Link Rope",
-    "เชือกพลังงาน": "Link Rope",
-  };
-  let m: RegExpExecArray | null;
-  while ((m = reEN.exec(rawL))) vote(mapEN[m[1]], 8);
-  while ((m = reTH.exec(rawL))) vote(mapTH[m[1]], 8);
+  // main คงที่ของหัว/มือ
+  if (/\bhp\b\s*705\b/i.test(joined)) vote("Head", 4);
+  if (/\batk\b\s*352\b/i.test(joined)) vote("Hands", 4);
 
-  // ค่าหลักคงที่
-  if (/\bhp\b\s*705\b/.test(joined) || (/\b705\b/.test(joined) && /\bhp\b/.test(joined))) vote("Head", 4);
-  if (/\batk\b\s*352\b/.test(joined) || (/\b352\b/.test(joined) && /\batk\b/.test(joined))) vote("Hands", 4);
-
-  // SPD → Feet (ลดน้ำหนัก)
-  if (/\bspd\b/.test(joined) || /ความเร็ว/.test(rawL)) vote("Feet", 1);
+  // SPD → Feet (ลด bias)
+  if (/\bspd\b|ความเร็ว/.test(rawL)) vote("Feet", 1);
 
   // Break Effect → Link Rope
-  if (/(break\s*effect|เอฟเฟกต์ทำลายล้าง|เอฟเฟกต์ทำลาย)\b/.test(rawL + " " + joined)) vote("Link Rope", 7);
+  if (/(break\s*effect|เอฟเฟกต์ทำลาย)/.test(rawL + " " + joined)) vote("Link Rope", 7);
 
-  // DMG Bonus (ธาตุ/กายภาพ/จินตภาพฯ) → Planar Sphere
-  if (
-    /(dmg\s*bonus|pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical)/.test(
-      rawL + " " + joined
-    )
-  )
+  // DMG Bonus/ธาตุ → Planar Sphere
+  if (/(dmg\s*bonus|pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical)/.test(rawL + " " + joined))
     vote("Planar Sphere", 7);
 
   const order: HsrSlot[] = ["Planar Sphere", "Link Rope", "Feet", "Head", "Hands", "Body"];
-  let best: HsrSlot | null = null;
-  let bestScore = -1;
-  for (const s of order) if (score[s] > bestScore) (best = s), (bestScore = score[s]);
+  let best: HsrSlot | null = null, bestScore = -1;
+  for (const s of order) if (score[s] > bestScore) { best = s; bestScore = score[s]; }
   return bestScore > 0 ? best : null;
 }
 
-/* =========================================================
- * Main/Sub parsing
- * =======================================================*/
+/* ====================== Main/Sub parsing ====================== */
 const MAIN_NAMES = [
-  "HP",
-  "ATK",
-  "DEF",
-  "Elemental Mastery",
-  "Energy Recharge",
-  "CRIT Rate",
-  "CRIT DMG",
-  "Healing Bonus",
-  "Pyro DMG Bonus",
-  "Hydro DMG Bonus",
-  "Electro DMG Bonus",
-  "Cryo DMG Bonus",
-  "Anemo DMG Bonus",
-  "Geo DMG Bonus",
-  "Dendro DMG Bonus",
-  "Physical DMG Bonus",
-  // HSR
-  "Effect Hit Rate",
-  "Effect RES",
-  "SPD",
-  "Break Effect",
-  "Energy Regeneration Rate",
+  "HP","ATK","DEF","Elemental Mastery","Energy Recharge","CRIT Rate","CRIT DMG","Healing Bonus",
+  "Pyro DMG Bonus","Hydro DMG Bonus","Electro DMG Bonus","Cryo DMG Bonus","Anemo DMG Bonus","Geo DMG Bonus","Dendro DMG Bonus",
+  "Physical DMG Bonus","Effect Hit Rate","Effect RES","SPD","Break Effect","Energy Regeneration Rate",
 ];
-const NAME_WORD_RE = new RegExp(
-  `\\b(${MAIN_NAMES.map((n) => n.replace(/ /g, "\\s+")).join("|")})\\b`,
-  "i"
-);
-const MAIN_NAME_FIRST = new RegExp(
-  `\\b(${MAIN_NAMES.map((n) => n.replace(/ /g, "\\s+")).join("|")})\\b\\s*:?\\s*([0-9][\\d,.]*\\s*%?)`,
-  "i"
-);
-const MAIN_NUM_FIRST = new RegExp(
-  `([0-9][\\d,.]*\\s*%?)\\s*\\b(${MAIN_NAMES.map((n) => n.replace(/ /g, "\\s+")).join("|")})\\b`,
-  "i"
-);
+const NAME_WORD_RE = new RegExp(`\\b(${MAIN_NAMES.map(n=>n.replace(/ /g,"\\s+")).join("|")})\\b`,"i");
+const MAIN_NAME_FIRST = new RegExp(`\\b(${MAIN_NAMES.map(n=>n.replace(/ /g,"\\s+")).join("|")})\\b\\s*:?\\s*([0-9][\\d,.]*\\s*%?)`,"i");
+const MAIN_NUM_FIRST  = new RegExp(`([0-9][\\d,.]*\\s*%?)\\s*\\b(${MAIN_NAMES.map(n=>n.replace(/ /g,"\\s+")).join("|")})\\b`,"i");
 const NUM_FLEX = /([0-9][\d.,]*\s*%?)/;
 
-type Cand = {
-  name: string;
-  value: string;
-  lineIdx: number;
-  bullet: boolean;
-  inHeader: boolean;
-};
-
+type Cand = { name: string; value: string; lineIdx: number; bullet: boolean; inHeader: boolean };
 const bulletStart = /^\s*[•\-·●○・*]/;
 
 function plausibleGIMain(name: string, value: string, piece: GiSlot | null): boolean {
   const isPct = /%$/.test(value);
-  const v = parseFloat(value.replace("%", ""));
+  const v = parseFloat(value.replace("%",""));
   if (isNaN(v)) return true;
 
   const isEM = /Elemental Mastery/i.test(name);
@@ -364,11 +221,11 @@ function plausibleGIMain(name: string, value: string, piece: GiSlot | null): boo
   const isBasic = /\b(HP|ATK|DEF)\b/i.test(name);
 
   if (piece && (piece === "Sands" || piece === "Goblet" || piece === "Circlet")) {
-    if (isEM) return !isPct && v >= 120 && v <= 240;
-    if (isER) return isPct && v >= 40 && v <= 55;
-    if (isCR) return isPct && v >= 28 && v <= 34;
-    if (isCD) return isPct && v >= 58 && v <= 70;
-    if (isHB) return isPct && v >= 30 && v <= 40;
+    if (isEM)   return !isPct && v >= 120 && v <= 240;
+    if (isER)   return isPct && v >= 40 && v <= 55;
+    if (isCR)   return isPct && v >= 28 && v <= 34;
+    if (isCD)   return isPct && v >= 58 && v <= 70;
+    if (isHB)   return isPct && v >= 30 && v <= 40;
     if (isElem) return isPct && v >= 40 && v <= 58;
     if (isPhys) return isPct && v >= 55 && v <= 70;
     if (isBasic) return isPct && v >= 40 && v <= 58;
@@ -377,27 +234,20 @@ function plausibleGIMain(name: string, value: string, piece: GiSlot | null): boo
   return true;
 }
 
-function extractMainStatSmart(
-  linesENIn: string[],
-  piece: GiSlot | HsrSlot | null,
-  game: GameKey
-): Stat | null {
-  const lines = linesENIn.map((x) => normalizeStatWords(x));
+function extractMainStatSmart(linesENIn: string[], piece: GiSlot | HsrSlot | null, game: GameKey): Stat | null {
+  const lines = linesENIn.map(x => normalizeStatWords(x));
 
   if (game === "gi") {
-    if (piece === "Flower") return { name: "HP", value: "4780" };
-    if (piece === "Plume") return { name: "ATK", value: "311" };
+    if (piece === "Flower") return { name: "HP",  value: "4780" };
+    if (piece === "Plume")  return { name: "ATK", value: "311" };
   } else {
-    if (piece === "Head") return { name: "HP", value: "705" };
+    if (piece === "Head")  return { name: "HP",  value: "705" };
     if (piece === "Hands") return { name: "ATK", value: "352" };
   }
 
   let headerEnd = lines.length;
   for (let i = 0; i < lines.length; i++) {
-    if (/^\+?\s*20\b/.test(lines[i]) || bulletStart.test(lines[i])) {
-      headerEnd = i;
-      break;
-    }
+    if (/^\+?\s*20\b/.test(lines[i]) || bulletStart.test(lines[i])) { headerEnd = i; break; }
   }
   const headLimit = Math.min(24, lines.length);
 
@@ -407,7 +257,7 @@ function extractMainStatSmart(
     cands.push({ name, value: v, lineIdx: i, bullet: bulletStart.test(lines[i]), inHeader });
   };
 
-  const scanRanges: Array<{ start: number; end: number; header: boolean }> = [
+  const scanRanges: Array<{start:number; end:number; header:boolean}> = [
     { start: 0, end: Math.min(headLimit, headerEnd), header: true },
     { start: 0, end: Math.min(headLimit, lines.length), header: false },
   ];
@@ -417,26 +267,17 @@ function extractMainStatSmart(
       const ln = lines[i];
 
       let m = ln.match(MAIN_NAME_FIRST);
-      if (m) {
-        pushCand(m[1], m[2], i, rng.header);
-        continue;
-      }
+      if (m) { pushCand(m[1], m[2], i, rng.header); continue; }
 
       m = ln.match(MAIN_NUM_FIRST);
-      if (m) {
-        pushCand(m[2], m[1], i, rng.header);
-        continue;
-      }
+      if (m) { pushCand(m[2], m[1], i, rng.header); continue; }
 
       if (rng.header && NAME_WORD_RE.test(ln)) {
         const n = ln.match(NAME_WORD_RE)![1];
         for (let k = 1; k <= 2 && i + k < rng.end; k++) {
           const nx = lines[i + k];
           const mm = nx.match(NUM_FLEX);
-          if (mm) {
-            pushCand(n, mm[1], i, true);
-            break;
-          }
+          if (mm) { pushCand(n, mm[1], i, true); break; }
         }
       }
       if (rng.header) {
@@ -445,10 +286,7 @@ function extractMainStatSmart(
           for (let k = 1; k <= 2 && i - k >= rng.start; k++) {
             const pv = lines[i - k];
             const nn = pv.match(NAME_WORD_RE);
-            if (nn) {
-              pushCand(nn[1], numHere[1], i - k, true);
-              break;
-            }
+            if (nn) { pushCand(nn[1], numHere[1], i - k, true); break; }
           }
         }
       }
@@ -463,33 +301,26 @@ function extractMainStatSmart(
     const nobullet = c.bullet ? -16 : 16;
     let plaus = 0;
     const isPct = /%$/.test(c.value);
-    const v = parseFloat(c.value.replace("%", ""));
+    const v = parseFloat(c.value.replace("%",""));
     if (game === "gi" && (piece === "Sands" || piece === "Goblet" || piece === "Circlet")) {
       if (isPct) plaus += 6;
       if (!isPct && /Elemental Mastery/i.test(c.name)) plaus += 6;
       if (!isPct && !/Elemental Mastery/i.test(c.name)) plaus -= 8;
     }
-    if (
-      game === "hsr" &&
-      (piece === "Body" || piece === "Feet" || piece === "Planar Sphere" || piece === "Link Rope")
-    ) {
+    if (game === "hsr" && (piece === "Body" || piece === "Feet" || piece === "Planar Sphere" || piece === "Link Rope")) {
       if (isPct) plaus += 4;
     }
     if (!isNaN(v) && !isPct && v <= 60) plaus -= 4;
     if (game === "gi" && !plausibleGIMain(c.name, c.value, piece as GiSlot | null)) plaus -= 30;
 
-    const important = /(DMG Bonus|CRIT|Recharge|Mastery|Effect|Break|SPD|Healing|Regeneration)/i.test(
-      c.name
-    )
-      ? 3
-      : 0;
+    const important = /(DMG Bonus|CRIT|Recharge|Mastery|Effect|Break|SPD|Healing|Regeneration)/i.test(c.name) ? 3 : 0;
     return headerBonus + pos + nobullet + plaus + important;
   };
 
   cands.sort((a, b) => score(b) - score(a));
   let winner: Cand | undefined = cands[0];
   if (game === "gi" && (piece === "Sands" || piece === "Goblet" || piece === "Circlet")) {
-    winner = cands.find((c) => plausibleGIMain(c.name, c.value, piece as GiSlot | null));
+    winner = cands.find(c => plausibleGIMain(c.name, c.value, piece as GiSlot | null));
   }
   if (!winner) winner = cands[0];
   return { name: winner.name, value: winner.value };
@@ -508,22 +339,16 @@ function uniqStats(subs: Stat[]) {
 }
 
 function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[] {
-  const lines = linesENIn.map((x) => normalizeStatWords(x));
-
+  const lines = linesENIn.map(x => normalizeStatWords(x));
   let startIdx = 0;
   for (let i = 0; i < lines.length; i++) {
-    if (bulletStart.test(lines[i])) {
-      startIdx = i;
-      break;
-    }
+    if (bulletStart.test(lines[i])) { startIdx = i; break; }
   }
 
   const out: Stat[] = [];
   const push = (s: Stat) => {
-    if (mainStat && s.name.toLowerCase() === mainStat.name.toLowerCase() && s.value === mainStat.value)
-      return;
-    if (!out.some((x) => x.name.toLowerCase() === s.name.toLowerCase() && x.value === s.value))
-      out.push(s);
+    if (mainStat && s.name.toLowerCase() === mainStat.name.toLowerCase() && s.value === mainStat.value) return;
+    if (!out.some(x => x.name.toLowerCase() === s.name.toLowerCase() && x.value === s.value)) out.push(s);
   };
 
   const NAME_FIRST =
@@ -543,63 +368,62 @@ function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[
     if (!line) continue;
 
     let m = line.match(NAME_FIRST);
-    if (m) {
-      push({ name: m[1], value: m[2].replace(/,/g, "").replace(/\s+/g, "") });
-      continue;
-    }
+    if (m) { push({ name: m[1], value: m[2].replace(/,/g, "").replace(/\s+/g, "") }); continue; }
 
     m = line.match(NUM_FIRST);
-    if (m) {
-      push({ name: m[2], value: m[1].replace(/,/g, "").replace(/\s+/g, "") });
-      continue;
-    }
+    if (m) { push({ name: m[2], value: m[1].replace(/,/g, "").replace(/\s+/g, "") }); continue; }
 
     const nameOnly = line.match(NAME_ONLY);
     if (nameOnly && i + 1 < lines.length) {
       const nx = lines[i + 1].replace(bulletStart, "").trim();
       const vv = nx.match(PURE_NUM);
-      if (vv) {
-        push({ name: nameOnly[1], value: vv[0].replace(/,/g, "").replace(/\s+/g, "") });
-        continue;
-      }
+      if (vv) { push({ name: nameOnly[1], value: vv[0].replace(/,/g, "").replace(/\s+/g, "") }); continue; }
     }
   }
 
   return uniqStats(out);
 }
 
-/* =========================================================
- * Guess setName from DB (ไม่ใช้ Regex รายชื่อแล้ว)
- * =======================================================*/
+/* ====================== Set catalog via API ====================== */
+type SetRow = { name: string; short_id?: string; set_kind?: string };
+const setCatalogCache: { gi?: SetRow[]; hsr?: SetRow[] } = {};
+
+async function fetchSetCatalog(game: GameKey): Promise<SetRow[]> {
+  if (setCatalogCache[game]?.length) return setCatalogCache[game]!;
+  const res = await fetch(`/api/sets?game=${game}`, { cache: "no-store" });
+  if (!res.ok) return [];
+  const json = await res.json();
+  const rows: SetRow[] = (json?.rows || []).map((r: any) => ({
+    name: String(r.name || ""),
+    short_id: String(r.short_id || ""),
+    set_kind: String(r.set_kind || ""),
+  }));
+  setCatalogCache[game] = rows;
+  return rows;
+}
+
 async function guessSetNameFromText(game: GameKey, rawText: string): Promise<string | null> {
-  const catalog = await loadSetCatalog(game);
+  const catalog = await fetchSetCatalog(game);
   if (!catalog.length) return null;
 
   const hay1 = clean(rawText);
   const hay2 = compress(rawText);
 
   let best: { name: string; score: number } | null = null;
-
   for (const r of catalog) {
-    const needle1 = clean(r.name);
-    const needle2 = compress(r.name);
-    let s = 0;
-    if (hay1.includes(needle1)) s += needle1.length * 2; // ตรงคำพร้อมเว้นวรรค
-    if (hay2.includes(needle2)) s += needle2.length; // แบบบีบอักษร
-    // เผื่อ OCR ตัดคำเป็นบรรทัด: ลองอนุญาตช่องว่างแบบ fuzzy
-    const fuzzy = new RegExp(needle1.replace(/\s+/g, "\\s*"), "i");
-    if (fuzzy.test(hay1)) s += needle1.length;
-
-    if (s > 0 && (!best || s > best.score)) {
-      best = { name: r.name, score: s };
-    }
+    const n1 = clean(r.name);
+    const n2 = compress(r.name);
+    let score = 0;
+    if (hay1.includes(n1)) score += n1.length * 2;
+    if (hay2.includes(n2)) score += n2.length;
+    const fuzzy = new RegExp(n1.replace(/\s+/g, "\\s*"), "i");
+    if (fuzzy.test(hay1)) score += n1.length;
+    if (score > 0 && (!best || score > best.score)) best = { name: r.name, score };
   }
   return best?.name ?? null;
 }
 
-/* =========================================================
- * Parse by game (setName จาก DB)
- * =======================================================*/
+/* ====================== Parse by game ====================== */
 async function parseGI(text: string) {
   const lines = splitlines(text || "");
   const linesEN = normalizeLinesToEN(lines);
@@ -609,10 +433,7 @@ async function parseGI(text: string) {
   const substats = extractSubstatsSmart(linesEN, mainStat);
 
   const setName = await guessSetNameFromText("gi", text);
-  return { piece, mainStat: mainStat || null, substats, setName } as Pick<
-    GearItem,
-    "piece" | "mainStat" | "substats" | "setName"
-  >;
+  return { piece, mainStat: mainStat || null, substats, setName } as Pick<GearItem,"piece"|"mainStat"|"substats"|"setName">;
 }
 
 async function parseHSR(text: string) {
@@ -625,7 +446,7 @@ async function parseHSR(text: string) {
   const mainStat = extractMainStatSmart(linesEN, piece, "hsr");
   const substats = extractSubstatsSmart(linesEN, mainStat);
 
-  // override ตามค่าหลัก ถ้าไม่ได้ถูกบังคับจาก label
+  // override ตาม main (ถ้าไม่ได้ถูกบังคับจาก label)
   if (!forced && mainStat) {
     const n = mainStat.name.toLowerCase();
     const pct = /%/.test(mainStat.value || "");
@@ -637,15 +458,10 @@ async function parseHSR(text: string) {
   }
 
   const setName = await guessSetNameFromText("hsr", text);
-  return { piece, mainStat: mainStat || null, substats, setName } as Pick<
-    GearItem,
-    "piece" | "mainStat" | "substats" | "setName"
-  >;
+  return { piece, mainStat: mainStat || null, substats, setName } as Pick<GearItem,"piece"|"mainStat"|"substats"|"setName">;
 }
 
-/* =========================================================
- * Public API
- * =======================================================*/
+/* ====================== Public API ====================== */
 export async function ocrGear(file: File | Blob, game: GameKey): Promise<GearItem> {
   const text = await ocrWithFallback(file, "tha+eng");
   const parsed = game === "gi" ? await parseGI(text) : await parseHSR(text);
@@ -658,9 +474,7 @@ export async function ocrGear(file: File | Blob, game: GameKey): Promise<GearIte
   };
 }
 
-/* =========================================================
- * Aggregate + Advice (GI) — โค้ดเดิมของเธอ เอามาให้ครบ
- * =======================================================*/
+/* ====================== GI aggregate/advice (ของเดิม) ====================== */
 const num = (s?: string | null) => {
   if (!s) return 0;
   const m = String(s).match(/-?\d+(?:\.\d+)?/);
@@ -691,25 +505,11 @@ function canonKey(name: string) {
 
 export function aggregateGiArtifacts(gear: Partial<Record<GiSlot, GearItem>>) {
   const out = {
-    hp_flat: 0,
-    atk_flat: 0,
-    def_flat: 0,
-    hp_pct: 0,
-    atk_pct: 0,
-    def_pct: 0,
-    em: 0,
-    er_pct: 0,
-    cr_pct: 0,
-    cd_pct: 0,
-    pyro_pct: 0,
-    hydro_pct: 0,
-    cryo_pct: 0,
-    electro_pct: 0,
-    anemo_pct: 0,
-    geo_pct: 0,
-    dendro_pct: 0,
-    phys_pct: 0,
-    heal_pct: 0,
+    hp_flat: 0, atk_flat: 0, def_flat: 0,
+    hp_pct: 0, atk_pct: 0, def_pct: 0,
+    em: 0, er_pct: 0, cr_pct: 0, cd_pct: 0,
+    pyro_pct: 0, hydro_pct: 0, cryo_pct: 0, electro_pct: 0, anemo_pct: 0, geo_pct: 0, dendro_pct: 0,
+    phys_pct: 0, heal_pct: 0,
   };
   const add = (name?: string | null, val?: string | null) => {
     if (!name || !val) return;
@@ -718,11 +518,10 @@ export function aggregateGiArtifacts(gear: Partial<Record<GiSlot, GearItem>>) {
     (out as any)[key] += num(val);
   };
 
-  (GI_SLOTS as readonly GiSlot[]).forEach((slot) => {
-    const it = gear[slot];
-    if (!it) return;
+  (GI_SLOTS as readonly GiSlot[]).forEach(slot => {
+    const it = gear[slot]; if (!it) return;
     if (it.mainStat) add(it.mainStat.name, it.mainStat.value);
-    (it.substats || []).forEach((s) => add(s.name, s.value));
+    (it.substats || []).forEach(s => add(s.name, s.value));
   });
   return out;
 }
@@ -730,41 +529,18 @@ export function aggregateGiArtifacts(gear: Partial<Record<GiSlot, GearItem>>) {
 export type GiAdvice = {
   char: string;
   totals: {
-    hp_flat: number;
-    atk_flat: number;
-    def_flat: number;
-    em: number;
-    er_pct: number;
-    cr_pct: number;
-    cd_pct: number;
-    dmg: {
-      pyro: number;
-      hydro: number;
-      cryo: number;
-      electro: number;
-      anemo: number;
-      geo: number;
-      dendro: number;
-      physical: number;
-    };
+    hp_flat: number; atk_flat: number; def_flat: number;
+    em: number; er_pct: number; cr_pct: number; cd_pct: number;
+    dmg: { pyro: number; hydro: number; cryo: number; electro: number; anemo: number; geo: number; dendro: number; physical: number };
   };
   notes: string[];
 };
 
-export async function analyzeGiArtifacts(
-  char: string,
-  gear: Partial<Record<GiSlot, GearItem>>
-): Promise<GiAdvice> {
+export async function analyzeGiArtifacts(char: string, gear: Partial<Record<GiSlot, GearItem>>): Promise<GiAdvice> {
   const agg = aggregateGiArtifacts(gear);
   const dmg = {
-    pyro: agg.pyro_pct,
-    hydro: agg.hydro_pct,
-    cryo: agg.cryo_pct,
-    electro: agg.electro_pct,
-    anemo: agg.anemo_pct,
-    geo: agg.geo_pct,
-    dendro: agg.dendro_pct,
-    physical: agg.phys_pct,
+    pyro: agg.pyro_pct, hydro: agg.hydro_pct, cryo: agg.cryo_pct, electro: agg.electro_pct,
+    anemo: agg.anemo_pct, geo: agg.geo_pct, dendro: agg.dendro_pct, physical: agg.phys_pct,
   };
 
   const base = { er: 100, cr: 5, cd: 50 };
@@ -784,14 +560,13 @@ export async function analyzeGiArtifacts(
   const isFurina = /furina/i.test(char);
 
   if (totals.er_pct < 130) notes.push("Energy Recharge ยังต่ำ (<130%) → หา ER จากซับ/ทรายเพิ่ม");
-  else if (totals.er_pct < 160)
-    notes.push(`Energy Recharge รวม ~${totals.er_pct.toFixed(0)}% พอใช้ได้ ถ้าหมุนสกิลไม่พอ ลองดันไป ~180%`);
+  else if (totals.er_pct < 160) notes.push(`Energy Recharge รวม ~${totals.er_pct.toFixed(0)}% พอใช้ได้ ถ้าหมุนสกิลไม่พอ ลองดันไป ~180%`);
 
   if (totals.cr_pct < 55) notes.push("คริเรตต่ำ (<55%) → ต้องการ CR เพิ่ม");
   if (totals.cd_pct < 120) notes.push("คริดาเมจยังน้อย (<120%) → หา CD เพิ่มจากซับ/หมวก");
 
-  const maxElem = Object.entries(dmg).sort((a, b) => b[1] - a[1])[0];
-  if (!maxElem || maxElem[1] < 15) {
+  const maxElem = Object.entries(dmg).sort((a,b)=>b[1]-a[1])[0];
+  if (!maxElem || (maxElem[1] < 15)) {
     if (isFurina) notes.push("ยังไม่มีโบนัสธาตุเด่น → ลอง Goblet Hydro DMG (แทน HP%) จะดาเมจขึ้นชัด");
     else notes.push("ยังไม่มีโบนัสธาตุ/ฟิสิคัล → ใช้ Goblet ธาตุให้ตรงคาแรกเตอร์");
   }
@@ -815,7 +590,7 @@ export function formatGiAdvice(r: GiAdvice) {
   ];
   if (r.notes.length) {
     lines.push("ข้อเสนอแนะ:");
-    r.notes.forEach((n) => lines.push(`• ${n}`));
+    r.notes.forEach(n => lines.push(`• ${n}`));
   }
   return lines.join("\n");
 }
