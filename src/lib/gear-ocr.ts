@@ -1,7 +1,9 @@
 // /src/lib/gear-ocr.ts
 import { ocrWithFallback } from "@/lib/tess";
 
-/* ====================== Public Types ====================== */
+/* =========================================================
+ * Types
+ * =======================================================*/
 export type GameKey = "gi" | "hsr";
 
 export type Stat = { name: string; value: string };
@@ -18,7 +20,50 @@ export type GearItem = {
   substats: Stat[];
 };
 
-/* ====================== Normalize helpers ====================== */
+/* =========================================================
+ * DB helper (ใช้ lib/db ถ้ามี; ไม่งั้นสร้าง pool เอง)
+ * =======================================================*/
+import type { RowDataPacket } from "mysql2/promise";
+let dbPool: any = null;
+try {
+  // ถ้าโปรเจกต์มีไฟล์ lib/db.ts ที่ export default pool หรือชื่อ db/pool ก็เอามาใช้ได้เลย
+  // @ts-ignore
+  const maybe = require("@/lib/db");
+  dbPool = maybe.default || maybe.db || maybe.pool || null;
+} catch {}
+if (!dbPool) {
+  // fallback: สร้าง pool เอง (ฝั่ง server เท่านั้น)
+  // ไม่อยากซ้ำซ้อน ก็ชี้ env ชุดเดียวกับ API ของเธอนั่นแหละ
+  const mysql = require("mysql2/promise");
+  dbPool = mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: process.env.DB_NAME,
+    connectionLimit: 10,
+  });
+}
+
+type SetRow = { name: string; short_id: string; set_kind?: string };
+const setCache: { gi: SetRow[] | null; hsr: SetRow[] | null } = { gi: null, hsr: null };
+
+async function loadSetCatalog(game: GameKey): Promise<SetRow[]> {
+  if (setCache[game]) return setCache[game]!;
+  const table = game === "gi" ? "items_gi" : "items_hsr";
+  const [rows] = (await dbPool.query(
+    `SELECT name, short_id, set_kind FROM ${table}`
+  )) as [RowDataPacket[], any];
+  setCache[game] = rows.map((r: any) => ({
+    name: String(r.name || ""),
+    short_id: String(r.short_id || ""),
+    set_kind: String(r.set_kind || ""),
+  }));
+  return setCache[game]!;
+}
+
+/* =========================================================
+ * Normalize helpers
+ * =======================================================*/
 const THAI_DIGITS = "๐๑๒๓๔๕๖๗๘๙";
 const toArabic = (s: string) =>
   [...(s || "")]
@@ -28,7 +73,6 @@ const toArabic = (s: string) =>
     })
     .join("");
 
-// รวมรูปแบบ % ให้เป็นตัวเดียว และลบเว้นวรรคก่อนเครื่องหมาย
 const normalizePercentChars = (s: string) =>
   s.replace(/[％﹪]/g, "%").replace(/\s+%/g, "%");
 
@@ -43,7 +87,20 @@ const splitlines = (s: string) =>
     .map((x) => x.replace(/[ \t\f\v]+/g, " ").trim())
     .filter(Boolean);
 
-/* ====================== Dictionaries ====================== */
+const clean = (s: string) =>
+  normalizePercentChars(toArabic(s))
+    .toLowerCase()
+    .replace(/\u200b/g, "")
+    .replace(/[’‘]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+
+const compress = (s: string) => clean(s).replace(/[^a-z0-9ก-๙]/g, "");
+
+/* =========================================================
+ * Dictionaries / normalizers
+ * =======================================================*/
 const STAT_MAP: Record<string, string> = {
   // GI (TH -> EN)
   "พลังชีวิต": "HP",
@@ -89,7 +146,6 @@ const PIECE_MAP_GI: Record<string, GiSlot> = {
   "sands of eon": "Sands",
   "goblet of eonothem": "Goblet",
   "circlet of logos": "Circlet",
-  // TH (คร่าว ๆ)
   "ดอกไม้": "Flower",
   "ขนนก": "Plume",
   "ทราย": "Sands",
@@ -97,21 +153,18 @@ const PIECE_MAP_GI: Record<string, GiSlot> = {
   "มงกุฎ": "Circlet",
 };
 
-// อย่ามี mapping ที่โยน "sphere" ไปเป็น "Body" เด็ดขาด
+// สำคัญมาก: ไม่มีอะไรส่งไป Body/Feet จากคำว่า sphere/rope
 const PIECE_MAP_HSR: Record<string, HsrSlot> = {
-  // EN ยาวก่อน
-  "planar sphere": "Planar Sphere",
-  "link rope": "Link Rope",
+  "planar\\s*sph?ere": "Planar Sphere",
+  "sphere": "Planar Sphere",
+  "orb": "Planar Sphere",
+  "link\\s*rope": "Link Rope",
+  "rope": "Link Rope",
+  "belt": "Link Rope",
   "head": "Head",
   "hands": "Hands",
   "body": "Body",
   "feet": "Feet",
-  // EN สั้น (OCR ชอบตัดคำ/เว้นบรรทัด)
-  "planar\\s*sph?ere": "Planar Sphere",
-  "sphere": "Planar Sphere",
-  "orb": "Planar Sphere",
-  "rope": "Link Rope",
-  "belt": "Link Rope",
   // TH
   "ศีรษะ": "Head",
   "หัว": "Head",
@@ -124,20 +177,6 @@ const PIECE_MAP_HSR: Record<string, HsrSlot> = {
   "เชือก": "Link Rope",
 };
 
-// noun hints จากชื่อไอเท็ม (เช่น Ceremonial Boots → Feet)
-const PIECE_HINTS_BY_NOUN: Record<HsrSlot, string[]> = {
-  Head: ["helmet", "helm", "mask", "headgear", "hat", "หมวก", "หน้ากาก"],
-  Hands: ["gloves", "gauntlet", "gauntlets", "handguard", "handguards", "ถุงมือ"],
-  Body: ["armor", "coat", "mail", "breastplate", "เกราะ", "เสื้อ", "เสื้อเกราะ"],
-  Feet: ["boots", "shoes", "รองเท้า", "greaves"],
-  "Planar Sphere": ["sphere", "orb", "ลูกแก้ว", "ทรงกลม"],
-  "Link Rope": ["rope", "cord", "belt", "เชือก", "โซ่"],
-};
-
-const rankKeys = (m: Record<string, any>) =>
-  Object.keys(m).sort((a, b) => b.length - a.length);
-
-/* ---------- Word normalizer ---------- */
 function fuzzyRegex(s: string) {
   return new RegExp(
     s
@@ -150,16 +189,12 @@ function fuzzyRegex(s: string) {
 
 function normalizeStatWords(line: string): string {
   let s = normalizePercentChars(toArabic(line));
-
   for (const [th, en] of Object.entries(STAT_MAP)) {
     const re = fuzzyRegex(th);
     if (re.test(s)) s = s.replace(re, en);
   }
-
-  // เคสไทย/อังกฤษปนสำหรับคริ
   s = s.replace(/(?:dmg|ดาเมจ)\s*คริ[ตท]?คอ?ล?/gi, "CRIT DMG");
   s = s.replace(/อัตรา\s*คริ(ติคอล)?/gi, "CRIT Rate");
-
   return s
     .replace(/[·•●○・]/g, "•")
     .replace(/\u200b/g, "")
@@ -171,22 +206,29 @@ function normalizeStatWords(line: string): string {
 }
 const normalizeLinesToEN = (lines: string[]) => lines.map((l) => normalizeStatWords(l));
 
-/* ====================== Piece detection ====================== */
+/* =========================================================
+ * HSR slot detection — hard-lock label + voting
+ * =======================================================*/
+function forceSlotFromLabel(raw: string): HsrSlot | null {
+  const s = clean(raw);
+  if (/\bplanar\s*sph?ere\b|ลูกแก้ว|ทรงกลม/.test(s)) return "Planar Sphere";
+  if (/\blink\s*rope\b|เชือก(?:พลังงาน)?\b|belt\b/.test(s)) return "Link Rope";
+  return null;
+}
+
 function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
   const joined = linesEN.join(" ").toLowerCase();
-  for (const k of rankKeys(PIECE_MAP_GI)) {
-    if (joined.includes(k.toLowerCase())) return PIECE_MAP_GI[k];
+  for (const [k, v] of Object.entries(PIECE_MAP_GI)) {
+    if (new RegExp(k, "i").test(joined)) return v;
   }
-  // Fallback ที่เจอบ่อย
   if (/(^|\s)4780(\s|$)/.test(joined)) return "Flower";
   if (/(^|\s)311(\s|$)/.test(joined)) return "Plume";
   return null;
 }
 
-/** ตัวตรวจ HSR แบบ “โหวตหลายแหล่งข้อมูล” ให้ Planar Sphere/Link Rope เด่น และลด Feet จาก SPD */
 function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
-  const joined = linesEN.join(" \n ").toLowerCase();
-  const rawL = normalizePercentChars(toArabic(raw)).toLowerCase();
+  const joined = clean(linesEN.join(" \n "));
+  const rawL = clean(raw);
 
   const score: Record<HsrSlot, number> = {
     Head: 0,
@@ -198,14 +240,14 @@ function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
   };
   const vote = (slot: HsrSlot, w = 1) => (score[slot] += w);
 
-  // 1) ดิกชันนารี (ให้ raw น้ำหนักมาก)
+  // dictionary (raw ให้คะแนนสูงกว่า)
   for (const [k, v] of Object.entries(PIECE_MAP_HSR)) {
     const pat = new RegExp(k, "i");
     if (pat.test(joined)) vote(v, 3);
     if (pat.test(rawL)) vote(v, 5);
   }
 
-  // 2) ป้ายหัวการ์ด: "Planar Sphere +15" / "Link Rope +15" / "เท้า +15"
+  // header label EN/TH
   const reEN = /(head|hands|body|feet|planar\s*sph?ere|link\s*rope)\s*\+?\s*\d{1,2}\b/gi;
   const reTH = /(ศีรษะ|หัว|มือ|ลำตัว|เท้า|ลูกแก้ว|ทรงกลม|เชือก(?:พลังงาน)?)\s*\+?\s*\d{1,2}\b/gi;
   const mapEN: Record<string, HsrSlot> = {
@@ -231,48 +273,34 @@ function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
   while ((m = reEN.exec(rawL))) vote(mapEN[m[1]], 8);
   while ((m = reTH.exec(rawL))) vote(mapTH[m[1]], 8);
 
-  // 3) noun hints จากชื่อไอเท็ม (Ceremonial Boots → Feet, …)
-  for (const slot of Object.keys(PIECE_HINTS_BY_NOUN) as HsrSlot[]) {
-    for (const hint of PIECE_HINTS_BY_NOUN[slot]) {
-      const pat = new RegExp(`\\b${hint.replace(/\s+/g, "\\s+")}\\b`, "i");
-      if (pat.test(rawL)) vote(slot, 6);
-      if (pat.test(joined)) vote(slot, 5);
-    }
-  }
-
-  // 4) ฮินต์จาก “ค่าหลัก” ที่คงที่/เด่น
+  // ค่าหลักคงที่
   if (/\bhp\b\s*705\b/.test(joined) || (/\b705\b/.test(joined) && /\bhp\b/.test(joined))) vote("Head", 4);
   if (/\batk\b\s*352\b/.test(joined) || (/\b352\b/.test(joined) && /\batk\b/.test(joined))) vote("Hands", 4);
 
-  // SPD → Feet (ลดน้ำหนักลง เหลือ 1)
+  // SPD → Feet (ลดน้ำหนัก)
   if (/\bspd\b/.test(joined) || /ความเร็ว/.test(rawL)) vote("Feet", 1);
 
-  // Break Effect / เอฟเฟกต์ทำลายล้าง → Link Rope (น้ำหนักสูง)
-  if (/(break\s*effect|เอฟเฟกต์ทำลายล้าง|เอฟเฟกต์ทำลาย)\s*/.test(rawL + joined)) vote("Link Rope", 7);
+  // Break Effect → Link Rope
+  if (/(break\s*effect|เอฟเฟกต์ทำลายล้าง|เอฟเฟกต์ทำลาย)\b/.test(rawL + " " + joined)) vote("Link Rope", 7);
 
-  // Elemental DMG / “เพิ่ม DMG ไฟ/น้ำ/...” → Planar Sphere (น้ำหนักสูง)
+  // DMG Bonus (ธาตุ/กายภาพ/จินตภาพฯ) → Planar Sphere
   if (
-    /(dmg\s*(pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical)|เพิ่ม\s*dmg\s*(ไฟ|น้ำ|ไฟฟ้า|น้ำแข็ง|ลม|หิน|ควอนตัม|จินตภาพ|กายภาพ))/.test(
-      rawL + joined
+    /(dmg\s*bonus|pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical)/.test(
+      rawL + " " + joined
     )
-  ) {
+  )
     vote("Planar Sphere", 7);
-  }
 
-  // สรุปเลือกคะแนนสูงสุด (ผูกคะแนนให้ Planar/Link ชนะ Feet & Body)
   const order: HsrSlot[] = ["Planar Sphere", "Link Rope", "Feet", "Head", "Hands", "Body"];
   let best: HsrSlot | null = null;
   let bestScore = -1;
-  for (const s of order) {
-    if (score[s] > bestScore) {
-      best = s;
-      bestScore = score[s];
-    }
-  }
+  for (const s of order) if (score[s] > bestScore) (best = s), (bestScore = score[s]);
   return bestScore > 0 ? best : null;
 }
 
-/* ====================== Main/Sub parsing ====================== */
+/* =========================================================
+ * Main/Sub parsing
+ * =======================================================*/
 const MAIN_NAMES = [
   "HP",
   "ATK",
@@ -356,7 +384,6 @@ function extractMainStatSmart(
 ): Stat | null {
   const lines = linesENIn.map((x) => normalizeStatWords(x));
 
-  // Override: slot ที่ค่าหลักตายตัว
   if (game === "gi") {
     if (piece === "Flower") return { name: "HP", value: "4780" };
     if (piece === "Plume") return { name: "ATK", value: "311" };
@@ -365,7 +392,6 @@ function extractMainStatSmart(
     if (piece === "Hands") return { name: "ATK", value: "352" };
   }
 
-  // หาโซนหัวการ์ด (ก่อน bullet / +20)
   let headerEnd = lines.length;
   for (let i = 0; i < lines.length; i++) {
     if (/^\+?\s*20\b/.test(lines[i]) || bulletStart.test(lines[i])) {
@@ -402,7 +428,6 @@ function extractMainStatSmart(
         continue;
       }
 
-      // แยกคนละบรรทัด
       if (rng.header && NAME_WORD_RE.test(ln)) {
         const n = ln.match(NAME_WORD_RE)![1];
         for (let k = 1; k <= 2 && i + k < rng.end; k++) {
@@ -470,7 +495,6 @@ function extractMainStatSmart(
   return { name: winner.name, value: winner.value };
 }
 
-/* ----- Substats ----- */
 function uniqStats(subs: Stat[]) {
   const out: Stat[] = [];
   const seen = new Set<string>();
@@ -544,57 +568,87 @@ function extractSubstatsSmart(linesENIn: string[], mainStat: Stat | null): Stat[
   return uniqStats(out);
 }
 
-/* ====================== Parse by game ====================== */
-function parseGI(text: string) {
+/* =========================================================
+ * Guess setName from DB (ไม่ใช้ Regex รายชื่อแล้ว)
+ * =======================================================*/
+async function guessSetNameFromText(game: GameKey, rawText: string): Promise<string | null> {
+  const catalog = await loadSetCatalog(game);
+  if (!catalog.length) return null;
+
+  const hay1 = clean(rawText);
+  const hay2 = compress(rawText);
+
+  let best: { name: string; score: number } | null = null;
+
+  for (const r of catalog) {
+    const needle1 = clean(r.name);
+    const needle2 = compress(r.name);
+    let s = 0;
+    if (hay1.includes(needle1)) s += needle1.length * 2; // ตรงคำพร้อมเว้นวรรค
+    if (hay2.includes(needle2)) s += needle2.length; // แบบบีบอักษร
+    // เผื่อ OCR ตัดคำเป็นบรรทัด: ลองอนุญาตช่องว่างแบบ fuzzy
+    const fuzzy = new RegExp(needle1.replace(/\s+/g, "\\s*"), "i");
+    if (fuzzy.test(hay1)) s += needle1.length;
+
+    if (s > 0 && (!best || s > best.score)) {
+      best = { name: r.name, score: s };
+    }
+  }
+  return best?.name ?? null;
+}
+
+/* =========================================================
+ * Parse by game (setName จาก DB)
+ * =======================================================*/
+async function parseGI(text: string) {
   const lines = splitlines(text || "");
   const linesEN = normalizeLinesToEN(lines);
-  const joined = linesEN.join(" ");
 
   const piece = detectPieceGI(linesEN, text) || "Sands";
   const mainStat = extractMainStatSmart(linesEN, piece, "gi");
   const substats = extractSubstatsSmart(linesEN, mainStat);
 
-  const setGuess =
-    joined.match(
-      /(Gladiator.?s Finale|Golden Troupe|Marechaussee Hunter|Noblesse Oblige|Viridescent Venerer|Deepwood Memories|Emblem of Severed Fate|Echoes of an Offering|Husk of Opulent Dreams|Tenacity of the Millelith|Blizzard Strayer|Shimenawa.?s Reminiscence|Heart of Depth|Crimson Witch of Flames|Ocean-?Hued Clam|Pale Flame|Archaic Petra)/i
-    )?.[1] ?? null;
-
-  return {
-    piece,
-    mainStat: mainStat || null,
-    substats,
-    setName: setGuess,
-  } as Pick<GearItem, "piece" | "mainStat" | "substats" | "setName">;
+  const setName = await guessSetNameFromText("gi", text);
+  return { piece, mainStat: mainStat || null, substats, setName } as Pick<
+    GearItem,
+    "piece" | "mainStat" | "substats" | "setName"
+  >;
 }
 
-function parseHSR(text: string) {
+async function parseHSR(text: string) {
   const lines = splitlines(text || "");
   const linesEN = normalizeLinesToEN(lines);
-  const joined = linesEN.join(" ");
 
-  // ใช้ตัวตรวจแบบหลายโหวต + ให้ Planar/Link สำคัญสุด
-  const piece = detectPieceHSR(linesEN, text) || "Body";
+  const forced = forceSlotFromLabel(text);
+  let piece = forced ?? detectPieceHSR(linesEN, text) ?? "Body";
+
   const mainStat = extractMainStatSmart(linesEN, piece, "hsr");
   const substats = extractSubstatsSmart(linesEN, mainStat);
 
-  const setGuess =
-    joined.match(
-      /(Musketeer of Wild Wheat|Eagle of Twilight Line|Hunter of Glacial Forest|Band of Sizzling Thunder|Genius of Brilliant Stars|Firesmith of Lava-Forging|Knight of Purity Palace|Champion of Streetwise Boxing|Guard of Wuthering Snow|Passerby of Wandering Cloud|Poet of Mourning Collapse|Bone Collection.?s Serene Demesne|The Ashblazing Grand Duke|Longevous Disciple|Messenger Traversing Hackerspace|Pioneer Diver of Dead Waters|Wastelander of Banditry Desert|Prisoner in Deep Confinement|Thief of Shooting Meteor|Sprightly Vonwacq|Space Sealing Station|Fleet of the Ageless|Rutilant Arena|Inert Salsotto|Talia: Kingdom of Banditry|Pan-Galactic Commercial Enterprise|Firmament Frontline: Glamoth|Broken Keel|Izumo Gensei and Takama Divine Realm|Sigonia, the Unclaimed Desolation|Penacony, Land of the Dreams|Rebel's Sojourn)/i
-    )?.[1] ?? null;
+  // override ตามค่าหลัก ถ้าไม่ได้ถูกบังคับจาก label
+  if (!forced && mainStat) {
+    const n = mainStat.name.toLowerCase();
+    const pct = /%/.test(mainStat.value || "");
+    if (/energy\s*regeneration|ฟื้นพลังงาน/.test(n)) piece = "Link Rope";
+    else if (/break\s*effect|เอฟเฟกต์ทำลาย/.test(n)) piece = "Link Rope";
+    else if (/spd/.test(n) && pct) piece = "Feet";
+    else if (/dmg\s*bonus|pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical/.test(n))
+      piece = "Planar Sphere";
+  }
 
-  return {
-    piece,
-    mainStat: mainStat || null,
-    substats,
-    setName: setGuess,
-  } as Pick<GearItem, "piece" | "mainStat" | "substats" | "setName">;
+  const setName = await guessSetNameFromText("hsr", text);
+  return { piece, mainStat: mainStat || null, substats, setName } as Pick<
+    GearItem,
+    "piece" | "mainStat" | "substats" | "setName"
+  >;
 }
 
-/* ====================== Public OCR API ====================== */
+/* =========================================================
+ * Public API
+ * =======================================================*/
 export async function ocrGear(file: File | Blob, game: GameKey): Promise<GearItem> {
-  // ใช้ tha+eng เผื่อ UI ไทย/อังกฤษปนกัน
   const text = await ocrWithFallback(file, "tha+eng");
-  const parsed = game === "gi" ? parseGI(text) : parseHSR(text);
+  const parsed = game === "gi" ? await parseGI(text) : await parseHSR(text);
   return {
     url: "",
     piece: parsed.piece as GiSlot | HsrSlot,
@@ -604,7 +658,9 @@ export async function ocrGear(file: File | Blob, game: GameKey): Promise<GearIte
   };
 }
 
-/* ====================== Aggregate + Advice (GI) ====================== */
+/* =========================================================
+ * Aggregate + Advice (GI) — โค้ดเดิมของเธอ เอามาให้ครบ
+ * =======================================================*/
 const num = (s?: string | null) => {
   if (!s) return 0;
   const m = String(s).match(/-?\d+(?:\.\d+)?/);
@@ -659,8 +715,7 @@ export function aggregateGiArtifacts(gear: Partial<Record<GiSlot, GearItem>>) {
     if (!name || !val) return;
     const key = canonKey(name);
     if (!key) return;
-    const v = num(val);
-    (out as any)[key] += v;
+    (out as any)[key] += num(val);
   };
 
   (GI_SLOTS as readonly GiSlot[]).forEach((slot) => {
@@ -712,7 +767,6 @@ export async function analyzeGiArtifacts(
     physical: agg.phys_pct,
   };
 
-  // ฐานคร่าว ๆ: ER 100, CR 5, CD 50
   const base = { er: 100, cr: 5, cd: 50 };
 
   const totals = {
@@ -729,16 +783,13 @@ export async function analyzeGiArtifacts(
   const notes: string[] = [];
   const isFurina = /furina/i.test(char);
 
-  // ER
   if (totals.er_pct < 130) notes.push("Energy Recharge ยังต่ำ (<130%) → หา ER จากซับ/ทรายเพิ่ม");
   else if (totals.er_pct < 160)
     notes.push(`Energy Recharge รวม ~${totals.er_pct.toFixed(0)}% พอใช้ได้ ถ้าหมุนสกิลไม่พอ ลองดันไป ~180%`);
 
-  // CR / CD
   if (totals.cr_pct < 55) notes.push("คริเรตต่ำ (<55%) → ต้องการ CR เพิ่ม");
   if (totals.cd_pct < 120) notes.push("คริดาเมจยังน้อย (<120%) → หา CD เพิ่มจากซับ/หมวก");
 
-  // ธาตุ/ฟิสิคัล
   const maxElem = Object.entries(dmg).sort((a, b) => b[1] - a[1])[0];
   if (!maxElem || maxElem[1] < 15) {
     if (isFurina) notes.push("ยังไม่มีโบนัสธาตุเด่น → ลอง Goblet Hydro DMG (แทน HP%) จะดาเมจขึ้นชัด");
