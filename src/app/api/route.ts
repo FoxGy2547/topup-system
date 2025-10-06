@@ -32,6 +32,7 @@ type Session = {
   playerName?: string;
 };
 
+/* ===================== Sessions ===================== */
 const sessions: Record<string, Session> = Object.create(null);
 function getSession(key: string) {
   if (!sessions[key]) sessions[key] = { state: "idle" };
@@ -76,12 +77,12 @@ function matchPackageByName(
   userText: string
 ): number | null {
   const s = normalize(userText);
-  // ลอง exact number-in-name ก่อน
+  // match ตัวเลขในชื่อก่อน
   for (let i = 0; i < rows.length; i++) {
     const num = String(rows[i].name).match(/\d{2,6}/)?.[0];
     if (num && s.includes(num)) return i;
   }
-  // จากนั้นลองชื่อเต็ม/บางส่วน
+  // จากนั้นค่อย match ชื่อ
   for (let i = 0; i < rows.length; i++) {
     const n = normalize(String(rows[i].name));
     if (s === n || s.startsWith(n) || s.includes(n)) return i;
@@ -166,69 +167,69 @@ async function fetchPlayerName(game: GameKey, uid: string): Promise<string> {
   return "";
 }
 
-/** สร้างข้อความโชว์ชื่อเต็มจากตัวย่อ (สำหรับแชท) */
-/** สร้างข้อความโชว์ชื่อเต็มจากตัวย่อ (สำหรับแชท) — รองรับ HSR 4+2 และ Planar มีหลายตัวเลือก A/B */
+/** แปลงตัวย่อ Relic/Planar เป็นชื่อเต็ม (รองรับ Cavern, Planar, และคู่ 4+2) */
 async function resolveSetDisplay(game: GameKey, setShortRaw: string) {
   const table = game === "gi" ? "items_gi" : "items_hsr";
 
-  // helper: ดึงชื่อเต็มจาก short_id หลายตัว
-  async function mapNames(ids: string[]) {
-    const cleaned = ids.map((s) => s.trim()).filter(Boolean);
+  async function getNames(ids: string[]) {
+    const cleaned = ids.map((x) => x.trim()).filter(Boolean);
     if (cleaned.length === 0) return new Map<string, string>();
-    const ph = cleaned.map(() => "?").join(",");
+
+    const placeholders = cleaned.map(() => "?").join(",");
     const [rows] = await db.query<RowDataPacket[]>(
-      `SELECT short_id, name FROM ${table} WHERE short_id IN (${ph})`,
+      `SELECT short_id, name FROM ${table} WHERE short_id IN (${placeholders})`,
       cleaned
     );
-    const m = new Map<string, string>();
+
+    const map = new Map<string, string>();
     (rows as RowDataPacket[]).forEach((r) => {
-      m.set(String(r.short_id), String(r.name || r.short_id));
+      map.set(String(r.short_id), String(r.name || r.short_id));
     });
-    // ใส่ fallback ให้ทุกตัว
     cleaned.forEach((id) => {
-      if (!m.has(id)) m.set(id, id);
+      if (!map.has(id)) map.set(id, id);
     });
-    return m;
+    return map;
   }
 
   const raw = setShortRaw.trim();
 
-  // ❶ เคส HSR: เขียนเป็น "Relic-Planar" และด้านขวา (Planar) อาจมีหลายตัวเลือกคั่นด้วย "/"
+  // [1] HSR Relic-Planar (4+2): "Relic-Planar" โดย Planar อาจมีหลายตัวเลือกคั่นด้วย "/"
   if (raw.includes("-")) {
-    const [leftRaw, rightRaw] = raw.split("-").map((s) => s.trim());
-    const leftIds = leftRaw.split("/").map((s) => s.trim());   // เผื่อ relic มีตัวเลือก (นาน ๆ ที)
-    const rightIds = rightRaw.split("/").map((s) => s.trim()); // Planar หลายตัวเลือก เช่น RA/FFG
+    const [relicRaw, planarRaw] = raw.split("-").map((s) => s.trim());
+    const relicIds = relicRaw.split("/").map((s) => s.trim());
+    const planarIds = planarRaw.split("/").map((s) => s.trim());
 
-    const nameMap = await mapNames([...leftIds, ...rightIds]);
+    const map = await getNames([...relicIds, ...planarIds]);
+    const relicNames = relicIds.map((id) => map.get(id)!).join(" หรือ ");
+    const planarNames = planarIds.map((id) => map.get(id)!).join(" หรือ ");
 
-    const leftNames = leftIds.map((id) => nameMap.get(id)!).join(" หรือ ");
-    const rightNames = rightIds.map((id) => nameMap.get(id)!).join(" หรือ ");
-
-    return `${leftNames} 4 ชิ้น + ${rightNames} 2 ชิ้น`;
+    return `${relicNames} 4 ชิ้น + ${planarNames} 2 ชิ้น`;
   }
 
-  // ❷ เคส 2+2 : "A+B"
+  // [2] 2+2 : "A+B"
   if (raw.includes("+")) {
     const ids = raw.split("+").map((s) => s.trim());
-    const nameMap = await mapNames(ids);
-    const names = ids.map((id) => nameMap.get(id)!).join(" 2 ชิ้น + ");
+    const map = await getNames(ids);
+    const parts = ids.map((id) => `${map.get(id)} 2 ชิ้น`);
+    return parts.join(" + ");
+  }
+
+  // [3] ตัวเลือกหลายชุดด้วย "/" (Planar หรือ GI แบบ “หรือ”)
+  if (raw.includes("/")) {
+    const ids = raw.split("/").map((s) => s.trim());
+    const map = await getNames(ids);
+    const names = ids.map((id) => map.get(id)).join(" หรือ ");
+    // ถ้าเป็น GI มักจะหมายถึง 4 ชิ้น “หรือ”; ถ้าเป็น HSR แบบเลือก Planar เดี่ยวคือ 2 ชิ้น
+    // แต่เราไม่รู้ชนิดจากสตริงนี้แน่ ๆ เลยเลือกให้เป็นข้อความกลาง ๆ 2 ชิ้นในบริบท relic/planar
     return `${names} 2 ชิ้น`;
   }
 
-  // ❸ เคส GI "A/B" = 4 ชิ้นแบบ “หรือ”
-  if (raw.includes("/")) {
-    const ids = raw.split("/").map((s) => s.trim());
-    const nameMap = await mapNames(ids);
-    const names = ids.map((id) => nameMap.get(id)!).join(" 4 ชิ้น หรือ ");
-    return `${names} 4 ชิ้น`;
-  }
-
-  // ❹ เดี่ยว ๆ 4 ชิ้น
-  const nameMap = await mapNames([raw]);
-  return `${nameMap.get(raw)} 4 ชิ้น`;
+  // [4] เดี่ยว ๆ 4 ชิ้น
+  const map = await getNames([raw]);
+  return `${map.get(raw)} 4 ชิ้น`;
 }
 
-/** ✅ สำหรับ frontend: คืนแถวของรายการ (ตัวย่อ + ชื่อเต็ม + จำนวนชิ้น) */
+/** สำหรับ frontend: คืนแถวของรายการ (ตัวย่อ + ชื่อเต็ม + จำนวนชิ้น) */
 async function expandSetLines(game: GameKey, setShortRaw: string) {
   type SetItem = { short: string; full: string; pieces: number };
   const table = game === "gi" ? "items_gi" : "items_hsr";
@@ -251,12 +252,14 @@ async function expandSetLines(game: GameKey, setShortRaw: string) {
   });
 
   if (!hasPlus && !hasDash) {
+    // GI: "A/B/C" -> หลายบรรทัด บรรทัดละ 4 ชิ้น
     return tokens.map((t) => [
       { short: t, full: nameMap.get(t) || t, pieces: 4 },
     ]);
   }
 
   if (hasDash) {
+    // HSR: "Relic-Planar" -> 1 บรรทัด (4 + 2)
     const [a, b] = tokens;
     if (!a || !b) return [];
     return [
@@ -268,6 +271,7 @@ async function expandSetLines(game: GameKey, setShortRaw: string) {
   }
 
   if (hasPlus) {
+    // 2+2: "A+B" -> 1 บรรทัด (2+2)
     return [[...tokens.map((t) => ({ short: t, full: nameMap.get(t) || t, pieces: 2 }))]];
   }
 
@@ -335,8 +339,7 @@ async function handleIntent(intent: Intent, s: Session) {
     s.uid = undefined;
     s.playerName = undefined;
     return {
-      reply:
-        "ยกเลิกขั้นตอนแล้ว เลือกต่อได้เลย:",
+      reply: "ยกเลิกขั้นตอนแล้ว เลือกต่อได้เลย:",
       quickReplies: [
         "เติม Genshin Impact",
         "เติม Honkai: Star Rail",
