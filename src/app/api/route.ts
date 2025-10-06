@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 /* ===================== DB Pool ===================== */
 const db = mysql.createPool({
-  host: process.env.DB_HOST || 'sql12.freesqldatabase.com',
-  user: process.env.DB_USER || 'sql12796984',
-  password: process.env.DB_PASS || 'n72gyyb4KT',
-  database: process.env.DB_NAME || 'sql12796984',
+  host: process.env.DB_HOST || "sql12.freesqldatabase.com",
+  user: process.env.DB_USER || "sql12796984",
+  password: process.env.DB_PASS || "n72gyyb4KT",
+  database: process.env.DB_NAME || "sql12796984",
   connectionLimit: 10,
 });
 
@@ -38,8 +37,17 @@ function getSession(key: string) {
   if (!sessions[key]) sessions[key] = { state: "idle" };
   return sessions[key];
 }
-function ukey(u?: string) {
-  return u || "__anon__";
+
+/** ใช้ username > sessionId > IP+UA เพื่อแยก session ต่อคนให้ชัด */
+function clientKey(req: Request, username?: string, sessionId?: string) {
+  if (username) return `u:${username}`;
+  if (sessionId) return `sid:${sessionId}`;
+  const ip =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    req.headers.get("cf-connecting-ip") ||
+    "0.0.0.0";
+  const ua = (req.headers.get("user-agent") || "").slice(0, 80);
+  return `ipua:${ip}:${ua}`;
 }
 
 /* ===================== Utils ===================== */
@@ -62,16 +70,21 @@ function normalize(s: string) {
     .trim()
     .toLowerCase();
 }
+
 function matchPackageByName(
   rows: Array<{ name: string; price: number }>,
   userText: string
 ): number | null {
   const s = normalize(userText);
+  // ลอง exact number-in-name ก่อน
   for (let i = 0; i < rows.length; i++) {
-    const n = normalize(String(rows[i].name));
-    if (s.includes(n)) return i;
     const num = String(rows[i].name).match(/\d{2,6}/)?.[0];
     if (num && s.includes(num)) return i;
+  }
+  // จากนั้นลองชื่อเต็ม/บางส่วน
+  for (let i = 0; i < rows.length; i++) {
+    const n = normalize(String(rows[i].name));
+    if (s === n || s.startsWith(n) || s.includes(n)) return i;
   }
   return null;
 }
@@ -158,7 +171,7 @@ async function resolveSetDisplay(game: GameKey, setShortRaw: string) {
   const table = game === "gi" ? "items_gi" : "items_hsr";
 
   const isPlus = setShortRaw.includes("+"); // 2+2
-  const divider = isPlus ? "+" : "/";       // GI ใช้ "/" แทน "หรือ"
+  const divider = isPlus ? "+" : "/"; // GI ใช้ "/" แทน "หรือ"
   const parts = setShortRaw
     .split(divider)
     .map((s) => s.trim())
@@ -200,17 +213,16 @@ async function resolveSetDisplay(game: GameKey, setShortRaw: string) {
   return parts.map((p) => `${map.get(p) || p} 4 ชิ้น`).join(" หรือ ");
 }
 
-/** ✅ สร้างข้อมูล frontend: แยกเป็นแถวของรายการ (ตัวย่อ + ชื่อเต็ม + จำนวนชิ้น) */
+/** ✅ สำหรับ frontend: คืนแถวของรายการ (ตัวย่อ + ชื่อเต็ม + จำนวนชิ้น) */
 async function expandSetLines(game: GameKey, setShortRaw: string) {
-  // return: SetItem[][]
   type SetItem = { short: string; full: string; pieces: number };
   const table = game === "gi" ? "items_gi" : "items_hsr";
 
-  const hasPlus = setShortRaw.includes("+");   // 2+2
-  const hasDash = setShortRaw.includes("-");   // HSR pair 4+2
+  const hasPlus = setShortRaw.includes("+"); // 2+2
+  const hasDash = setShortRaw.includes("-"); // HSR pair 4+2
   const sep = hasPlus ? "+" : hasDash ? "-" : "/";
 
-  const tokens = setShortRaw.split(sep).map(s => s.trim()).filter(Boolean);
+  const tokens = setShortRaw.split(sep).map((s) => s.trim()).filter(Boolean);
   if (tokens.length === 0) return [] as SetItem[][];
 
   const ph = tokens.map(() => "?").join(",");
@@ -219,66 +231,37 @@ async function expandSetLines(game: GameKey, setShortRaw: string) {
     tokens
   );
   const nameMap = new Map<string, string>();
-  (rows as RowDataPacket[]).forEach(r => {
+  (rows as RowDataPacket[]).forEach((r) => {
     nameMap.set(String(r.short_id), String(r.name || r.short_id));
   });
 
   if (!hasPlus && !hasDash) {
-    // GI: "A/B/C" -> หลายบรรทัด บรรทัดละ 1 ชิ้น (4 ชิ้น)
-    return tokens.map(t => [({
-      short: t,
-      full: nameMap.get(t) || t,
-      pieces: 4,
-    })]);
+    return tokens.map((t) => [
+      { short: t, full: nameMap.get(t) || t, pieces: 4 },
+    ]);
   }
 
   if (hasDash) {
-    // HSR: "Relic-Planar" -> 1 บรรทัด 2 ชิ้น (4 + 2)
     const [a, b] = tokens;
     if (!a || !b) return [];
-    return [[
-      { short: a, full: nameMap.get(a) || a, pieces: 4 },
-      { short: b, full: nameMap.get(b) || b, pieces: 2 },
-    ]];
+    return [
+      [
+        { short: a, full: nameMap.get(a) || a, pieces: 4 },
+        { short: b, full: nameMap.get(b) || b, pieces: 2 },
+      ],
+    ];
   }
 
   if (hasPlus) {
-    // 2+2: "A+B" -> 1 บรรทัด 2 ชิ้น (2+2)
-    return [[
-      ...tokens.map(t => ({ short: t, full: nameMap.get(t) || t, pieces: 2 })),
-    ]];
+    return [[...tokens.map((t) => ({ short: t, full: nameMap.get(t) || t, pieces: 2 }))]];
   }
 
   return [];
 }
 
-/* ===================== Gemini (fallback-only) ===================== */
-const genAI =
-  process.env.GEMINI_API_KEY &&
-  new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+/* ===================== Global Intents & helpers ===================== */
+type Intent = "gi_topup" | "hsr_topup" | "artifact" | "relic" | "cancel" | "help";
 
-async function geminiAssist(user: string) {
-  if (!genAI) {
-    return (
-      "สนใจเติมเกมหรือดูข้อมูล artifact/relic ไหมคะ?\n" +
-      "ลองพิมพ์: ‘เติม Genshin Impact’, ‘เติม Honkai: Star Rail’, ‘ดู artifact genshin impact’ หรือ ‘ดู relic honkai star rail’ ได้เลยน้า~"
-    );
-  }
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-  const system =
-    "You are Ruby, a friendly Thai sales assistant. " +
-    "ONLY guide users toward these supported intents: " +
-    "1) เติม Genshin Impact, 2) เติม Honkai: Star Rail, 3) ดู artifact genshin impact, 4) ดู relic honkai star rail. " +
-    "If the user asks other topics, politely steer them to those options. Keep it short and persuasive.";
-
-  const prompt = `${system}\n\nUser: ${user}\nAssistant:`;
-  const r = await model.generateContent(prompt);
-  const out = r.response.text().trim();
-  return out || "สนใจเติมเกมหรือดู artifact/relic ไหมคะ ✨";
-}
-
-/* ===================== Intent detection ===================== */
 const GI_CHARGING = [
   "เติม genshin impact",
   "เติมเกนชิน",
@@ -308,22 +291,116 @@ const RELIC_HSR = [
   "ดู relic",
   "relic ที่เหมาะกับ",
 ];
+
 function hasAny(text: string, arr: string[]) {
   const t = normalize(text);
   return arr.some((k) => t.includes(normalize(k)));
 }
 
+const RE_CONFIRM = /^(ยืนยัน|ตกลง|ok|โอเค|confirm)$/i;
+const RE_CANCEL = /^(ยกเลิก|cancel|ไม่เอา|ยกเลิกคำสั่ง)$/i;
+
+function detectIntent(t: string): Intent | null {
+  if (RE_CANCEL.test(t)) return "cancel";
+  if (hasAny(t, GI_CHARGING)) return "gi_topup";
+  if (hasAny(t, HSR_CHARGING)) return "hsr_topup";
+  if (hasAny(t, ARTIFACT_GI)) return "artifact";
+  if (hasAny(t, RELIC_HSR)) return "relic";
+  if (/^(help|ช่วยด้วย|เมนู|เริ่มใหม่)$/i.test(t)) return "help";
+  return null;
+}
+
+async function handleIntent(intent: Intent, s: Session) {
+  if (intent === "cancel") {
+    s.state = "idle";
+    s.game = undefined;
+    s.selectedIndex = undefined;
+    s.selectedName = undefined;
+    s.selectedPrice = undefined;
+    s.uid = undefined;
+    s.playerName = undefined;
+    return {
+      reply:
+        "ยกเลิกขั้นตอนแล้ว เลือกต่อได้เลย:",
+      quickReplies: [
+        "เติม Genshin Impact",
+        "เติม Honkai: Star Rail",
+        "ดู Artifact Genshin Impact",
+        "ดู Relic Honkai Star Rail",
+      ],
+    };
+  }
+
+  if (intent === "gi_topup") {
+    const list = await fetchProducts("gi");
+    s.state = "waiting_gi";
+    s.game = "gi";
+    return {
+      reply:
+        `สวัสดีค่ะ เติม Genshin Impact ได้เลย\n\n` +
+        `${renderProductList(list)}\n\n` +
+        `พิมพ์หมายเลข 1-${list.length} หรือพิมพ์ชื่อแพ็กก็ได้`,
+    };
+  }
+
+  if (intent === "hsr_topup") {
+    const list = await fetchProducts("hsr");
+    s.state = "waiting_hsr";
+    s.game = "hsr";
+    return {
+      reply:
+        `สวัสดีค่ะ เติม Honkai: Star Rail ได้เลย\n\n` +
+        `${renderProductList(list)}\n\n` +
+        `พิมพ์หมายเลข 1-${list.length} หรือพิมพ์ชื่อแพ็กก็ได้`,
+    };
+  }
+
+  if (intent === "artifact") {
+    s.state = "waiting_artifact_char";
+    s.game = "gi";
+    return { reply: "อยากดู Artifact ของตัวไหนคะ? พิมพ์ชื่อมาได้เลย~" };
+  }
+
+  if (intent === "relic") {
+    s.state = "waiting_relic_char";
+    s.game = "hsr";
+    return { reply: "อยากดู Relic ของตัวไหนคะ? พิมพ์ชื่อมาได้เลย~" };
+  }
+
+  return {
+    reply:
+      "เมนูหลัก:\n• เติม Genshin Impact\n• เติม Honkai: Star Rail\n• ดู Artifact Genshin Impact\n• ดู Relic Honkai: Star Rail",
+    quickReplies: [
+      "เติม Genshin Impact",
+      "เติม Honkai: Star Rail",
+      "ดู Artifact Genshin Impact",
+      "ดู Relic Honkai Star Rail",
+    ],
+  };
+}
+
+/* ===================== Fallback (deterministic) ===================== */
+function safeFallback() {
+  return (
+    "พิมพ์คำสั่งได้เลยนะคะ ✨\n" +
+    "• เติม Genshin Impact / เติม Honkai: Star Rail\n" +
+    "• ดู Artifact Genshin Impact / ดู Relic Honkai: Star Rail\n" +
+    "• หรือพิมพ์ ยกเลิก เพื่อเริ่มใหม่"
+  );
+}
+
 /* ===================== Route ===================== */
 export async function POST(req: Request) {
-  const { message, username, password } = (await req.json()) as {
+  const { message, username, password, sessionId } = (await req.json()) as {
     message?: string;
     username?: string;
     password?: string;
+    sessionId?: string;
   };
 
   const text: string = (message || "").toString().trim();
   const lower = normalize(text);
-  const key = ukey(username);
+  const key = clientKey(req, username, sessionId);
   const s = getSession(key);
 
   /* ---------- Login ---------- */
@@ -351,9 +428,16 @@ export async function POST(req: Request) {
     }
   }
 
+  /* ---------- Global interrupt: สลับโหมดได้ทุกที่ ---------- */
+  const intent = detectIntent(lower);
+  if (intent) {
+    const out = await handleIntent(intent, s);
+    return NextResponse.json(out);
+  }
+
   /* ---------- Confirm order ---------- */
   if (s.state === "confirm_order") {
-    if (/^ยืนยัน$/i.test(text)) {
+    if (RE_CONFIRM.test(text)) {
       const uid = s.uid || "-";
       const player =
         (s.playerName && s.playerName.trim()) || (s.game === "gi" ? "-" : "");
@@ -376,12 +460,17 @@ export async function POST(req: Request) {
         paymentRequest: { showQR: true },
       });
     }
-    if (/^ยกเลิก$/i.test(text)) {
+    if (RE_CANCEL.test(text)) {
       sessions[key] = { state: "idle" };
       return NextResponse.json({
         reply:
           "ยกเลิกคำสั่งซื้อแล้วค่ะ ถ้าต้องการเริ่มใหม่ เลือกเมนูด้านล่างได้เลย",
-        quickReplies: [],
+        quickReplies: [
+          "เติม Genshin Impact",
+          "เติม Honkai: Star Rail",
+          "ดู Artifact Genshin Impact",
+          "ดู Relic Honkai Star Rail",
+        ],
       });
     }
     return NextResponse.json({
@@ -394,7 +483,9 @@ export async function POST(req: Request) {
   if (s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr") {
     const uidOnly = toArabic(text).replace(/\D/g, "");
     if (!uidOnly) {
-      return NextResponse.json({ reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ" });
+      return NextResponse.json({
+        reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ",
+      });
     }
     s.uid = uidOnly;
 
@@ -432,13 +523,16 @@ export async function POST(req: Request) {
     const list = await fetchProducts(game);
 
     let idx: number | null = null;
-    if (isNumberPick) idx = parseInt(toArabic(text), 10) - 1;
+    if (isNumberPick)
+      idx = Math.min(
+        list.length - 1,
+        Math.max(0, parseInt(toArabic(text), 10) - 1)
+      );
     else idx = matchPackageByName(list, text);
 
     if (idx == null || idx < 0 || idx >= list.length) {
       return NextResponse.json({
-        reply:
-          "ไม่พบแพ็กเกจที่คุณเลือกค่ะ ลองพิมพ์หมายเลข 1-7 หรือพิมพ์ตัวเลข/ชื่อแพ็กให้ชัดเจนอีกครั้งน้า~",
+        reply: `ไม่พบแพ็กเกจที่เลือกค่ะ ลองพิมพ์หมายเลข 1-${list.length} หรือพิมพ์ตัวเลข/ชื่อแพ็กให้ชัดเจนอีกครั้งน้า~`,
       });
     }
 
@@ -454,46 +548,7 @@ export async function POST(req: Request) {
     });
   }
 
-  /* ---------- เติมเกม (Intents) ---------- */
-  if (hasAny(lower, GI_CHARGING)) {
-    const list = await fetchProducts("gi");
-    s.state = "waiting_gi";
-    s.game = "gi";
-    const reply =
-      `สวัสดีค่ะ รูบี้ยินดีช่วยเติม Genshin Impact นะคะ\n\n` +
-      `${renderProductList(list)}\n\n` +
-      `กรุณาพิมพ์หมายเลข 1-7 ได้เลยค่ะ`;
-    return NextResponse.json({ reply });
-  }
-
-  if (hasAny(lower, HSR_CHARGING)) {
-    const list = await fetchProducts("hsr");
-    s.state = "waiting_hsr";
-    s.game = "hsr";
-    const reply =
-      `สวัสดีค่ะ รูบี้ยินดีช่วยเติม Honkai: Star Rail นะคะ\n\n` +
-      `${renderProductList(list)}\n\n` +
-      `กรุณาพิมพ์หมายเลข 1-7 ได้เลยค่ะ`;
-    return NextResponse.json({ reply });
-  }
-
   /* ---------- artifact / relic ---------- */
-  if (hasAny(lower, ARTIFACT_GI)) {
-    s.state = "waiting_artifact_char";
-    s.game = "gi";
-    return NextResponse.json({
-      reply: "อยากดู artifact ของตัวละครไหนคะ? พิมพ์ชื่อมาได้เลย~",
-    });
-  }
-  if (hasAny(lower, RELIC_HSR)) {
-    s.state = "waiting_relic_char";
-    s.game = "hsr";
-    return NextResponse.json({
-      reply: "อยากดู relic ของตัวละครไหนคะ? พิมพ์ชื่อมาได้เลย~",
-    });
-  }
-
-  /* ---------- รับชื่อตัวละคร -> ดึง set_short -> แปลงตัวย่อเป็นชื่อเต็ม + ส่งโครงสร้าง lines ---------- */
   if (s.state === "waiting_artifact_char" || s.state === "waiting_relic_char") {
     const game: GameKey = s.state === "waiting_artifact_char" ? "gi" : "hsr";
     const raw = text.trim();
@@ -525,10 +580,8 @@ export async function POST(req: Request) {
 
     for (const r of rows as RowDataPacket[]) {
       const shortStr = String(r.set_short || "");
-      // สำหรับข้อความในบับเบิล
       const disp = await resolveSetDisplay(game, shortStr);
       textLines.push(`- ${disp}`);
-      // สำหรับ frontend แสดงรูป + ชื่อเต็ม (ใช้ตัวย่อเป็นไฟล์)
       const lines = await expandSetLines(game, shortStr);
       visualLines.push(...lines);
     }
@@ -543,11 +596,15 @@ export async function POST(req: Request) {
 
   /* ---------- Fallback ---------- */
   if (s.state === "idle") {
-    const reply = await geminiAssist(text).catch(() => "");
-    const safe =
-      reply ||
-      "สวัสดีค่ะ ถ้าสนใจเติมเกมพิมพ์ ‘เติม Genshin Impact’ หรือ ‘เติม Honkai: Star Rail’ ได้เลยนะคะ ✨";
-    return NextResponse.json({ reply: safe });
+    return NextResponse.json({
+      reply: safeFallback(),
+      quickReplies: [
+        "เติม Genshin Impact",
+        "เติม Honkai: Star Rail",
+        "ดู Artifact Genshin Impact",
+        "ดู Relic Honkai Star Rail",
+      ],
+    });
   }
 
   return NextResponse.json({
