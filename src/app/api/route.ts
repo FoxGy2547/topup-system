@@ -167,50 +167,65 @@ async function fetchPlayerName(game: GameKey, uid: string): Promise<string> {
 }
 
 /** สร้างข้อความโชว์ชื่อเต็มจากตัวย่อ (สำหรับแชท) */
+/** สร้างข้อความโชว์ชื่อเต็มจากตัวย่อ (สำหรับแชท) — รองรับ HSR 4+2 และ Planar มีหลายตัวเลือก A/B */
 async function resolveSetDisplay(game: GameKey, setShortRaw: string) {
   const table = game === "gi" ? "items_gi" : "items_hsr";
 
-  const isPlus = setShortRaw.includes("+"); // 2+2
-  const divider = isPlus ? "+" : "/"; // GI ใช้ "/" แทน "หรือ"
-  const parts = setShortRaw
-    .split(divider)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (parts.length === 0) return setShortRaw;
-
-  const ph = parts.map(() => "?").join(",");
-  const [rows] = await db.query<RowDataPacket[]>(
-    `SELECT short_id, name FROM ${table} WHERE short_id IN (${ph})`,
-    parts
-  );
-
-  const map = new Map<string, string>();
-  (rows as RowDataPacket[]).forEach((r) => {
-    map.set(r.short_id as string, (r.name as string) || String(r.short_id));
-  });
-
-  if (isPlus) {
-    if (parts.length === 2) {
-      const [a, b] = parts;
-      const n1 = map.get(a) || a;
-      const n2 = map.get(b) || b;
-      return `${n1} 2 ชิ้น + ${n2} 2 ชิ้น`;
-    }
-    return parts.map((p) => `${map.get(p) || p} 2 ชิ้น`).join(" + ");
+  // helper: ดึงชื่อเต็มจาก short_id หลายตัว
+  async function mapNames(ids: string[]) {
+    const cleaned = ids.map((s) => s.trim()).filter(Boolean);
+    if (cleaned.length === 0) return new Map<string, string>();
+    const ph = cleaned.map(() => "?").join(",");
+    const [rows] = await db.query<RowDataPacket[]>(
+      `SELECT short_id, name FROM ${table} WHERE short_id IN (${ph})`,
+      cleaned
+    );
+    const m = new Map<string, string>();
+    (rows as RowDataPacket[]).forEach((r) => {
+      m.set(String(r.short_id), String(r.name || r.short_id));
+    });
+    // ใส่ fallback ให้ทุกตัว
+    cleaned.forEach((id) => {
+      if (!m.has(id)) m.set(id, id);
+    });
+    return m;
   }
 
-  if (parts.length === 1) {
-    const a = parts[0];
-    const n = map.get(a) || a;
-    return `${n} 4 ชิ้น`;
+  const raw = setShortRaw.trim();
+
+  // ❶ เคส HSR: เขียนเป็น "Relic-Planar" และด้านขวา (Planar) อาจมีหลายตัวเลือกคั่นด้วย "/"
+  if (raw.includes("-")) {
+    const [leftRaw, rightRaw] = raw.split("-").map((s) => s.trim());
+    const leftIds = leftRaw.split("/").map((s) => s.trim());   // เผื่อ relic มีตัวเลือก (นาน ๆ ที)
+    const rightIds = rightRaw.split("/").map((s) => s.trim()); // Planar หลายตัวเลือก เช่น RA/FFG
+
+    const nameMap = await mapNames([...leftIds, ...rightIds]);
+
+    const leftNames = leftIds.map((id) => nameMap.get(id)!).join(" หรือ ");
+    const rightNames = rightIds.map((id) => nameMap.get(id)!).join(" หรือ ");
+
+    return `${leftNames} 4 ชิ้น + ${rightNames} 2 ชิ้น`;
   }
-  if (parts.length === 2) {
-    const [a, b] = parts;
-    const n1 = map.get(a) || a;
-    const n2 = map.get(b) || b;
-    return `${n1} 4 ชิ้น หรือ ${n2} 4 ชิ้น`;
+
+  // ❷ เคส 2+2 : "A+B"
+  if (raw.includes("+")) {
+    const ids = raw.split("+").map((s) => s.trim());
+    const nameMap = await mapNames(ids);
+    const names = ids.map((id) => nameMap.get(id)!).join(" 2 ชิ้น + ");
+    return `${names} 2 ชิ้น`;
   }
-  return parts.map((p) => `${map.get(p) || p} 4 ชิ้น`).join(" หรือ ");
+
+  // ❸ เคส GI "A/B" = 4 ชิ้นแบบ “หรือ”
+  if (raw.includes("/")) {
+    const ids = raw.split("/").map((s) => s.trim());
+    const nameMap = await mapNames(ids);
+    const names = ids.map((id) => nameMap.get(id)!).join(" 4 ชิ้น หรือ ");
+    return `${names} 4 ชิ้น`;
+  }
+
+  // ❹ เดี่ยว ๆ 4 ชิ้น
+  const nameMap = await mapNames([raw]);
+  return `${nameMap.get(raw)} 4 ชิ้น`;
 }
 
 /** ✅ สำหรับ frontend: คืนแถวของรายการ (ตัวย่อ + ชื่อเต็ม + จำนวนชิ้น) */
