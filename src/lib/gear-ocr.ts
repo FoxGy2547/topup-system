@@ -172,15 +172,85 @@ function detectPieceGI(linesEN: string[], raw: string): GiSlot | null {
   return null;
 }
 
-function detectPieceHSR(linesEN: string[]): HsrSlot | null {
-  const joined = linesEN.join(" ").toLowerCase();
-  for (const k of rankKeys(PIECE_MAP_HSR)) {
-    if (joined.includes(k)) return PIECE_MAP_HSR[k];
+/** ตัวตรวจ HSR แบบ “โหวตหลายแหล่งข้อมูล” เพื่อลดอาการหลอนกลายเป็น Body */
+function detectPieceHSR(linesEN: string[], raw: string): HsrSlot | null {
+  const joined = linesEN.join(" \n ").toLowerCase();
+  const rawL = normalizePercentChars(toArabic(raw)).toLowerCase();
+
+  const score: Record<HsrSlot, number> = {
+    Head: 0,
+    Hands: 0,
+    Body: 0,
+    Feet: 0,
+    "Planar Sphere": 0,
+    "Link Rope": 0,
+  };
+  const vote = (slot: HsrSlot, w = 1) => (score[slot] += w);
+
+  // 1) ดิกชันนารี: ทั้งจากข้อความปกติ และ raw text (ให้น้ำหนัก raw มากกว่า)
+  for (const [k, v] of Object.entries(PIECE_MAP_HSR)) {
+    const pat = new RegExp(k.replace(/\s+/g, "\\s+"), "i");
+    if (pat.test(joined)) vote(v, 3);
+    if (pat.test(rawL)) vote(v, 4);
   }
-  // Fallback ค่าคงที่
-  if (/\bHP\b\s*705\b/.test(joined)) return "Head";
-  if (/\bATK\b\s*352\b/.test(joined)) return "Hands";
-  return null;
+
+  // 2) ป้ายบนการ์ด: "Planar Sphere +15", "เท้า +15" ฯลฯ
+  const reEN = /(head|hands|body|feet|planar\s*sphere|link\s*rope)\s*\+?\s*\d{1,2}\b/gi;
+  const reTH = /(ศีรษะ|หัว|มือ|ลำตัว|เท้า|ลูกแก้ว|ทรงกลม|เชือก(?:พลังงาน)?)\s*\+?\s*\d{1,2}\b/gi;
+  const mapEN: Record<string, HsrSlot> = {
+    head: "Head",
+    hands: "Hands",
+    body: "Body",
+    feet: "Feet",
+    "planar sphere": "Planar Sphere",
+    "link rope": "Link Rope",
+  };
+  const mapTH: Record<string, HsrSlot> = {
+    "ศีรษะ": "Head",
+    "หัว": "Head",
+    "มือ": "Hands",
+    "ลำตัว": "Body",
+    "เท้า": "Feet",
+    "ลูกแก้ว": "Planar Sphere",
+    "ทรงกลม": "Planar Sphere",
+    "เชือก": "Link Rope",
+    "เชือกพลังงาน": "Link Rope",
+  };
+  let m: RegExpExecArray | null;
+  while ((m = reEN.exec(rawL))) vote(mapEN[m[1]], 6);
+  while ((m = reTH.exec(rawL))) vote(mapTH[m[1]], 6);
+
+  // 3) ฮินต์จาก “ค่าหลัก” ที่เป็นค่าคงที่/เด่น
+  if (/\bhp\b\s*705\b/.test(joined) || (/\b705\b/.test(joined) && /\bhp\b/.test(joined))) vote("Head", 5);
+  if (/\batk\b\s*352\b/.test(joined) || (/\b352\b/.test(joined) && /\batk\b/.test(joined))) vote("Hands", 5);
+
+  // SPD มักอยู่ Feet
+  if (/\bspd\b/.test(joined) || /ความเร็ว/.test(rawL)) vote("Feet", 2);
+
+  // พวก Energy Regeneration / Break Effect เจอบ่อยใน Link Rope
+  if (/(energy\s*regeneration|ฟื้นพลังงาน)/.test(rawL + joined)) vote("Link Rope", 2);
+  if (/(break\s*effect|เอฟเฟกต์ทำลาย)/.test(rawL + joined)) vote("Link Rope", 2);
+
+  // DMG ของธาตุ มักเป็น Planar Sphere
+  if (
+    /(dmg.*(pyro|hydro|electro|cryo|anemo|geo|dendro|quantum|imaginary|physical)|เพิ่ม\s*dmg\s*(ไฟ|น้ำ|ไฟฟ้า|น้ำแข็ง|ลม|หิน|ควอนตัม|จินตภาพ|กายภาพ))/.test(
+      rawL + joined
+    )
+  ) {
+    vote("Planar Sphere", 2);
+  }
+
+  // สรุปเลือกคะแนนสูงสุด (ถ้าเสมอ พยายามหลีกเลี่ยง Body)
+  const order: HsrSlot[] = ["Planar Sphere", "Feet", "Link Rope", "Head", "Hands", "Body"];
+  let best: HsrSlot | null = null;
+  let bestScore = -1;
+  for (const s of order) {
+    if (score[s] > bestScore) {
+      best = s;
+      bestScore = score[s];
+    }
+  }
+  return bestScore > 0 ? best : null;
 }
 
 /* ====================== Main/Sub parsing ====================== */
@@ -483,7 +553,8 @@ function parseHSR(text: string) {
   const linesEN = normalizeLinesToEN(lines);
   const joined = linesEN.join(" ");
 
-  const piece = detectPieceHSR(linesEN) || "Body";
+  // ✅ ใช้ตัวตรวจแบบ “หลายโหวต” + fallback
+  const piece = detectPieceHSR(linesEN, text) || "Body";
   const mainStat = extractMainStatSmart(linesEN, piece, "hsr");
   const substats = extractSubstatsSmart(linesEN, mainStat);
 
