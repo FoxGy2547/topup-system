@@ -16,22 +16,21 @@ type ElementKey = "pyro" | "hydro" | "cryo" | "electro" | "anemo" | "geo" | "den
 type StatTotals = Partial<{
   hp: number; atk: number; def: number; em: number;
   er: number; cr: number; cd: number;
-  elem_dmg: number; // goblet/ascension bonus of chosen element (%)
+  elem_dmg: number;
 }>;
 type AdvicePayload = {
   mode?: "base" | "advice";
   character?: string;
   role?: string;
-  element?: ElementKey; // optional explicit element for elem_dmg merge
-  stats?: StatTotals;   // user-supplied stats (usually from artifacts/weapon/total)
-  statsAreTotals?: boolean; // if true, don't add base again
-  gear?: Record<string, { set?: string; main?: string; subs?: string[] }>; // optional artifact snapshot
+  element?: ElementKey;
+  stats?: StatTotals;
+  statsAreTotals?: boolean;
+  gear?: Record<string, { set?: string; main?: string; subs?: string[] }>;
 };
 
 /* ---------- DB helpers ---------- */
 const TABLES = ["gi_characters", "characters", "gi_base", "gi_character_base"];
 
-// normalize any db module shape into rows
 async function dbQuery(sql: string, params: any[] = []) {
   const mod: any = dbAny;
   if (typeof mod?.query === "function") return normalizeResult(await mod.query(sql, params));
@@ -42,11 +41,11 @@ async function dbQuery(sql: string, params: any[] = []) {
     if (typeof d?.query === "function") return normalizeResult(await d.query(sql, params));
     if (d?.pool?.query) return normalizeResult(await d.pool.query(sql, params));
   }
-  throw new Error('No usable query() found in "@/lib/db". Export a function `query` or `pool.query`.');
+  throw new Error('No usable query() found in "@/lib/db".');
 }
 function normalizeResult(res: any): any[] {
-  if (Array.isArray(res) && Array.isArray(res[0])) return res[0]; // mysql2 [rows, fields]
-  if (res?.rows) return res.rows; // pg
+  if (Array.isArray(res) && Array.isArray(res[0])) return res[0];
+  if (res?.rows) return res.rows;
   if (Array.isArray(res)) return res;
   return [];
 }
@@ -58,7 +57,7 @@ async function findBaseRow(nameOrKey: string): Promise<Row | null> {
         [nameOrKey, nameOrKey]
       );
       if (rows && rows[0]) return rows[0] as Row;
-    } catch { /* ignore missing tables */ }
+    } catch {}
   }
   return null;
 }
@@ -93,31 +92,30 @@ function detectElementFromBase(base: ReturnType<typeof rowToBase>): ElementKey |
   return bestVal > 0 ? best : null;
 }
 
-/* ---------- Practical target model (rule-based) ---------- */
+/* ---------- Targets + gap ---------- */
 const OVERRIDES: Record<string, Partial<StatTotals> & { er?: number; cr?: number; cd?: number }> = {
-  "xiangling": { er: 180, cr: 70, cd: 140 },
-  "bennett":   { er: 180, cr: 60, cd: 120 },
-  "xingqiu":   { er: 220, cr: 60, cd: 120 },
-  "raidenshogun": { er: 220, cr: 65, cd: 130 },
-  "furina": { er: 130, cr: 70, cd: 140 },
-  "yelan": { er: 220, cr: 60, cd: 120 },
-  "neuvillette": { er: 110, cr: 65, cd: 140 },
-  "nahida": { er: 120, em: 800, cr: 60, cd: 120 },
-  "kazuha": { er: 140, em: 800, cr: 0, cd: 0 },
+  xiangling: { er: 180, cr: 70, cd: 140 },
+  bennett: { er: 180, cr: 60, cd: 120 },
+  xingqiu: { er: 220, cr: 60, cd: 120 },
+  raidenshogun: { er: 220, cr: 65, cd: 130 },
+  furina: { er: 130, cr: 70, cd: 140 },
+  yelan: { er: 220, cr: 60, cd: 120 },
+  neuvillette: { er: 110, cr: 65, cd: 140 },
+  nahida: { er: 120, em: 800, cr: 60, cd: 120 },
+  kazuha: { er: 140, em: 800, cr: 0, cd: 0 },
 };
 function toKey(s = "") { return s.toLowerCase().replace(/\s+/g, ""); }
-function targetsFor(character: string, role?: string): Required<Pick<StatTotals, "er" | "cr" | "cd">> & StatTotals {
+function targetsFor(character: string, role?: string) {
   const key = toKey(character);
-  const base: Required<Pick<StatTotals, "er" | "cr" | "cd">> & StatTotals = {
+  const base = {
     er: role?.toLowerCase().includes("burst") || role?.toLowerCase().includes("off")
       ? 160 : 130,
     cr: 70,
     cd: 140,
   };
-  const o = OVERRIDES[key];
-  return { ...base, ...(o ?? {}) };
+  return { ...base, ...(OVERRIDES[key] ?? {}) };
 }
-function gap(current: number | undefined, target: number | undefined) {
+function gap(current?: number, target?: number) {
   if (current == null || target == null) return null;
   const need = +(target - current).toFixed(1);
   return { target, current, diff: need, status: need <= 0 ? "ok" : "need" };
@@ -125,10 +123,10 @@ function gap(current: number | undefined, target: number | undefined) {
 function buildGapReport(character: string, stats?: StatTotals, role?: string) {
   const tg = targetsFor(character, role);
   const report: Record<string, any> = {};
-  report.er   = gap(stats?.er, tg.er);
-  report.cr   = gap(stats?.cr, tg.cr);
-  report.cd   = gap(stats?.cd, tg.cd);
-  if (tg.em)  report.em  = gap(stats?.em, tg.em);
+  report.er = gap(stats?.er, tg.er);
+  report.cr = gap(stats?.cr, tg.cr);
+  report.cd = gap(stats?.cd, tg.cd);
+  if (tg.em) report.em = gap(stats?.em, tg.em);
   if (tg.elem_dmg) report.elem_dmg = gap(stats?.elem_dmg, tg.elem_dmg);
   if (stats?.cr != null && stats?.cd != null) {
     const idealCd = +(stats.cr * 2).toFixed(1);
@@ -137,10 +135,15 @@ function buildGapReport(character: string, stats?: StatTotals, role?: string) {
   return { targets: tg, gaps: report };
 }
 
-/* ---------- Merge user stats with base ---------- */
-function mergeWithBase(user: StatTotals | undefined, base: ReturnType<typeof rowToBase> | null, element?: ElementKey, statsAreTotals?: boolean): StatTotals {
+/* ---------- Merge totals with base ---------- */
+function mergeWithBase(
+  user: StatTotals | undefined,
+  base: ReturnType<typeof rowToBase> | null,
+  element?: ElementKey,
+  statsAreTotals?: boolean
+): StatTotals {
   const u = user || {};
-  if (!base || statsAreTotals) return { ...u }; // assume user already provided totals
+  if (!base || statsAreTotals) return { ...u };
   const usedElem = element || detectElementFromBase(base) || undefined;
   const elemBonus = usedElem ? base.elem[usedElem] : 0;
   return {
@@ -155,7 +158,7 @@ function mergeWithBase(user: StatTotals | undefined, base: ReturnType<typeof row
   };
 }
 
-/* ---------- Gemini helpers ---------- */
+/* ---------- Gemini ---------- */
 function gearToLines(gear: Record<string, any>) {
   const lines: string[] = [];
   for (const [slot, it] of Object.entries(gear || {})) {
@@ -172,10 +175,9 @@ function makePrompt(character: string, role: string | undefined, gear: Record<st
     `เป้าหมายโดยประมาณ: ${JSON.stringify(targets)}`,
     `ส่วนต่างที่ยังขาด/เกิน: ${JSON.stringify(gaps)}`,
     `ชิ้นที่มีตอนนี้:\n${gearToLines(gear)}`,
-    `ช่วยบอกว่าอะไร "ขาด" หรือ "เกิน" พร้อมข้อเสนอแนะที่ทำได้จริง (เปลี่ยน main-stat, เป้า ER, อัตราคริติคัล) และสรุปเป็นเช็คลิสต์ 3 ข้อท้ายข้อความ`,
+    `ช่วยบอกว่าอะไร "ขาด" หรือ "เกิน" พร้อมข้อเสนอแนะที่ทำได้จริง และสรุปเป็นเช็คลิสต์ 3 ข้อท้ายข้อความ`,
   ].filter(Boolean).join("\n\n");
 }
-
 async function callGemini(prompt: string) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY missing");
@@ -184,16 +186,9 @@ async function callGemini(prompt: string) {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.6, maxOutputTokens: 600 },
   };
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const j = await r.json();
-  const text =
-    j?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") ??
-    j?.candidates?.[0]?.content?.parts?.[0]?.text ??
-    "";
+  const text = j?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") ?? j?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
   return String(text || "").trim();
 }
 
@@ -203,7 +198,6 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as AdvicePayload;
     const mode = String(body.mode || "advice");
 
-    // 1) base stats lookup
     if (mode === "base") {
       const name = String(body.character || "").trim();
       if (!name) return NextResponse.json({ ok: false, error: "missing_character" }, { status: 400 });
@@ -212,7 +206,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, base: rowToBase(row) });
     }
 
-    // 2) advice with merged totals + targets + Gemini
     const character = String(body.character || "ตัวละคร").trim();
     const role = typeof body.role === "string" ? body.role : undefined;
     const element = body.element;
@@ -220,14 +213,10 @@ export async function POST(req: NextRequest) {
     const gear = body.gear || {};
     const statsAreTotals = !!body.statsAreTotals;
 
-    // base from DB
     const row = await findBaseRow(character);
     const base = row ? rowToBase(row) : null;
 
-    // merge totals (unless user already gave totals)
     const totals = mergeWithBase(userStats, base, element, statsAreTotals);
-
-    // compute targets + gaps against totals
     const { targets, gaps } = buildGapReport(character, totals, role);
 
     const prompt = makePrompt(character, role, gear, totals, targets, gaps, element);
