@@ -204,7 +204,6 @@ export async function POST(req: Request) {
   const key = clientKey(req, username, sessionId);
   const s = getSession(key);
 
-  /* ---------- busy guard ---------- */
   if (s.busy) {
     return NextResponse.json({
       reply: "กำลังประมวลผลอยู่นะคะ ⌛ รอสักครู่ก่อนน้า",
@@ -212,7 +211,6 @@ export async function POST(req: Request) {
     });
   }
 
-  /* ---------- intent guard ---------- */
   const intentNow = detectIntent(text);
   if (s.state !== "idle" && intentNow && intentNow !== "cancel") {
     const step =
@@ -444,14 +442,12 @@ UID: ${uid}
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
 
-    // เลือกด้วย #ID
     const idMatch = text.match(/#?(\d{5,})/);
     let target: { id: number; name: string; level: number } | null = null;
     if (idMatch) {
       const pickId = Number(idMatch[1]);
       target = chars.find((c) => c.id === pickId) || null;
     }
-    // เลือกด้วยชื่อ (normalize + ตัด (lv.xx))
     if (!target) {
       const want = normName(text);
       target = chars.find((c) => {
@@ -500,16 +496,13 @@ UID: ${uid}
       setRows = [];
     }
 
-    // ฟอร์แมตรายการชิ้น + โชว์ Weapon พร้อม icon URL
+    // ฟอร์แมตรายการชิ้น (ตัดรูปอาวุธออก)
     function fmtMainLabel(s?: string) {
       if (!s) return "";
       return s.replace(/^([^:]+):\s*/, (_m, stat) => `Main ${stat}: `);
     }
     function fmtSubsList(subs?: string[]) {
       return subs && subs.length ? ` | subs ${subs.join(", ")}` : "";
-    }
-    function fmtIcon(url?: string) {
-      return url ? ` | img ${url}` : "";
     }
 
     const gearLines =
@@ -518,7 +511,7 @@ UID: ${uid}
           const mainPart = fmtMainLabel(a.main);
           const subsPart = fmtSubsList(a.subs);
           if (a.piece === "Weapon") {
-            return `• Weapon: ${a.name}${a.level ? ` (lv.${a.level})` : ""} | ${mainPart}${subsPart}${fmtIcon(a.icon)}`;
+            return `• Weapon: ${a.name}${a.level ? ` (lv.${a.level})` : ""} | ${mainPart}${subsPart}`;
           }
           return `• ${a.piece}: ${mainPart}${subsPart}`;
         })

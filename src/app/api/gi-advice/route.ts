@@ -1,6 +1,7 @@
 // วิเคราะห์ Artifact/Weapon ของ Genshin ด้วย Gemini
 // - รองรับรุ่น 2.5 (ดีฟอลต์) และ fallback เป็น 2.0 → 1.5 อัตโนมัติ
-// - แนบ golden ratio และส่งเหตุผล error กลับให้ route หลัก
+// - แนบ golden ratio และ “ให้คิดรวม Base Lv.90 ของตัวละคร”
+// - ถ้ามี shownTotals ให้ถือเป็นแหล่งความจริงในการประเมิน
 import { NextRequest, NextResponse } from "next/server";
 
 /* =============== Types =============== */
@@ -38,11 +39,12 @@ function makePrompt(b: AdviceBody) {
   if ((b as any).totalsFromGear) {
     const t = (b as any).totalsFromGear as Totals;
     lines.push(
-      `สรุปรวมจากของ+อาวุธ: ER ${t.er.toFixed(1)}% | CR ${t.cr.toFixed(1)}% | CD ${t.cd.toFixed(1)}% | EM ${t.em.toFixed(0)} | HP% ${t.hp_pct.toFixed(1)} | ATK% ${t.atk_pct.toFixed(1)} | DEF% ${t.def_pct.toFixed(1)}`
+      `สรุปรวมจากของ+อาวุธ (ยังไม่รวม Base ตัวละคร): ER ${t.er.toFixed(1)}% | CR ${t.cr.toFixed(1)}% | CD ${t.cd.toFixed(1)}% | EM ${t.em.toFixed(0)} | HP% ${t.hp_pct.toFixed(1)} | ATK% ${t.atk_pct.toFixed(1)} | DEF% ${t.def_pct.toFixed(1)}`
     );
   }
 
   if ((b as any).shownTotals) {
+    // shownTotals คือค่าสรุปจริงบนโปรไฟล์ (ถือเป็น source of truth)
     const s = (b as any).shownTotals as TotalsShown;
     const pct = (x?: number) => (typeof x === "number" ? x * 100 : undefined);
     const hp = s.hp, atk = s.atk, def = s.def, em = s.em;
@@ -52,22 +54,31 @@ function makePrompt(b: AdviceBody) {
       ["Anemo", pct(s.anemo)], ["Geo", pct(s.geo)], ["Dendro", pct(s.dendro)], ["Physical", pct(s.physical)],
     ].filter((x) => typeof x[1] === "number").map((x) => `${x[0]} ${(x[1] as number).toFixed(1)}%`).join(" / ");
     lines.push(
-      `ค่าสรุปบนโปรไฟล์: HP ${hp ?? "-"} | ATK ${atk ?? "-"} | DEF ${def ?? "-"} | EM ${em ?? "-"} | ER ${(er ?? 0).toFixed(1)}% | CR ${(cr ?? 0).toFixed(1)}% | CD ${(cd ?? 0).toFixed(1)}%`
+      `ค่าสรุปบนโปรไฟล์ (ถือเป็นค่าจริง): HP ${hp ?? "-"} | ATK ${atk ?? "-"} | DEF ${def ?? "-"} | EM ${em ?? "-"} | ER ${(er ?? 0).toFixed(1)}% | CR ${(cr ?? 0).toFixed(1)}% | CD ${(cd ?? 0).toFixed(1)}%`
     );
     if (dmgList) lines.push(`DMG Bonus: ${dmgList}`);
   }
 
   lines.push("");
-  lines.push("หมายเหตุสำคัญ: ข้อมูลด้านบนเป็น “ค่าสเตตจาก Artifact และ Weapon เท่านั้น” (ยังไม่รวม Base/Ascension/Talent ของตัวละคร)");
-  lines.push("เวลาประเมินให้ ‘คิดรวมกับ Base ของตัวละคร’ แล้วค่อยตัดสินว่า CR/CD/ER ถึงเป้าหมายหรือยัง และควรเติมจากชิ้นไหน");
+  lines.push("หมายเหตุสำคัญ:");
+  lines.push("- ข้อมูลชิ้นส่วนด้านบนเป็น “ค่าสเตตจาก Artifact และ Weapon เท่านั้น” (ยังไม่รวม Base/Ascension/Talent)");
+  lines.push(`- ให้คุณดึง “ฐานสเตตของตัวละครเลเวล 90” ของ ${charName} (HP/ATK/DEF + ค่าเริ่มต้น CR 5%, CD 50%, ER 100%) จากความรู้ทั่วไปของเกม แล้ว “รวมกับค่าจาก Artifact/Weapon” เพื่อประเมินว่าแตะเป้าหมายหรือยัง`);
+  lines.push("- ถ้ามีค่า shownTotals ให้ใช้ shownTotals เป็นตัวตัดสินหลัก และห้ามสรุปว่า ‘ต่ำ’ ถ้าค่านั้นแตะเป้าหมายอยู่แล้ว");
+  lines.push("- หากไม่แน่ใจค่า base บางส่วน ให้ใช้ค่ามาตรฐานของเกม (CR=5%, CD=50%, ER=100%) และชี้แจงอย่างสั้น");
+
+  lines.push("");
+  lines.push("แนวทางสัดส่วนสมดุล (Golden Ratio/เป้าหมายพื้นฐาน):");
+  lines.push("- CR ~70–80% | CD ~130–160% | ER ~120–150% (ขึ้นกับความจำเป็นในการกดเบิร์ส)");
+  lines.push("- ถึง CR ~70% แล้วค่อยดัน CD ต่อ ถ้า CR <60% ให้เติมจากหมวก/ซับก่อน");
+  lines.push("- สำหรับตัวละครที่กดเบิร์สบ่อย ให้ความสำคัญ ER ให้ถึงเป้าก่อน แล้วค่อยบาลานซ์ CR/CD");
 
   return [
     `คุณเป็นผู้เชี่ยวชาญ Genshin Impact ช่วยวิเคราะห์อาร์ติแฟกต์ให้ “${charName}” เป็นภาษาไทยแบบสั้น กระชับ อ่านง่าย`,
     lines.join("\n"),
     `รูปแบบผลลัพธ์ (ข้อความธรรมดา ไม่ต้องมาร์กดาวน์):`,
-    `1) สรุปสเตตสำคัญที่ควรโฟกัส (อ้างอิง golden ratio หากไม่มีข้อยกเว้นของตัวละคร)`,
+    `1) สรุปสเตตสำคัญที่ควรโฟกัส (อ้างอิง golden ratio และใช้ค่า base Lv.90 รวมกับของก่อนตัดสิน)`,
     `2) ประเมิน main/sub รายชิ้นว่า ดี/พอใช้/ควรเปลี่ยน พร้อมเหตุผลสั้น ๆ`,
-    `3) ถ้า CR/CD/ER ยังต่ำกว่าเป้า ให้ระบุว่าขาดอะไรและควรเติมจากไหน (หมวก/ทราย/อาวุธ/ซับ)`,
+    `3) ถ้า CR/CD/ER ยังต่ำกว่าเป้า ให้ระบุว่าขาดอะไรและควรเติมจากไหน (หมวก/ทราย/อาวุธ/ซับ) — แต่ถ้า shownTotals ถึงเป้าแล้ว ให้บอกว่าโอเคและเสนอทางปรับแต่งเสริมแทน`,
   ].join("\n\n");
 }
 
@@ -79,29 +90,17 @@ async function callGeminiWithModel(prompt: string, model: string) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY missing");
 
-  // ใช้ v1beta generateContent ตามสเปกปัจจุบันของ Google
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+  const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 700 } };
 
-  const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.6, maxOutputTokens: 700 },
-  };
-
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const status = r.status;
   let j: any = null;
-  try { j = await r.json(); } catch { /* ignore */ }
+  try { j = await r.json(); } catch {}
 
   if (!r.ok) {
-    // ส่งข้อความ error ของ API กลับให้ debug ง่าย
     const apiMsg = j?.error?.message || JSON.stringify(j || {});
     const err = new Error(`gemini_http_${status}:${apiMsg}`);
-    // 404/400 รุ่นไม่พร้อมใช้งาน → ให้ไปลองรุ่นถัดไป
     (err as any).isModelNotAvailable = status === 404 || status === 400;
     throw err;
   }
@@ -123,10 +122,7 @@ async function callGemini(prompt: string) {
     } catch (e) {
       const msg = (e as Error)?.message || "gemini_error";
       errors.push(`[${m}] ${msg}`);
-      // ถ้าเป็นรุ่นไม่พร้อมใช้งาน ลองตัวถัดไป
-      if (!(e as any)?.isModelNotAvailable) {
-        break; // error ประเภทอื่น หยุดเลย
-      }
+      if (!(e as any)?.isModelNotAvailable) break;
     }
   }
   throw new Error(`no_model_available | ${errors.join(" | ")}`);
@@ -143,12 +139,7 @@ export async function POST(req: NextRequest) {
       if (!text.trim()) {
         return NextResponse.json({ ok: false, error: "empty_text" }, { status: 200 });
       }
-      return NextResponse.json({
-        ok: true,
-        text,
-        mode: (body as any).mode || "advice",
-        model, // รุ่นที่ใช้งานจริง (จะได้เห็นว่า fallback ไปรุ่นไหน)
-      });
+      return NextResponse.json({ ok: true, text, mode: (body as any).mode || "advice", model });
     } catch (e) {
       const msg = (e as Error)?.message || "gemini_error";
       return NextResponse.json({ ok: false, error: msg }, { status: 200 });
