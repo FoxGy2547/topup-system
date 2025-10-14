@@ -85,6 +85,7 @@ function makePrompt(b: AdviceBody) {
     C :
     emoji
     D :`,
+    `ลดการใช้ ** เพราะจะทำให้มันลายตา`,
   ].join("\n\n");
 }
 
