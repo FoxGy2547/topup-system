@@ -1,4 +1,3 @@
-// src/app/api/route.ts
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
 
@@ -47,9 +46,6 @@ type Session = {
 
   lastAdviceError?: string | null;
   busy?: boolean;
-
-  // anti-ghost
-  lastStepAt?: number;
 };
 
 /* ===================== Sessions ===================== */
@@ -59,9 +55,8 @@ function getSession(key: string) {
   return sessions[key];
 }
 function clientKey(req: Request, username?: string, sessionId?: string) {
-  // ให้ sessionId ชนะทุกอย่างถ้ามี (ลดเคส UA/IP เปลี่ยน)
-  if (sessionId) return `sid:${sessionId}`;
   if (username) return `u:${username}`;
+  if (sessionId) return `sid:${sessionId}`;
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("cf-connecting-ip") ||
@@ -90,10 +85,6 @@ function normalize(s: string) {
     .trim()
     .toLowerCase();
 }
-function normName(s: string) {
-  const noLv = s.replace(/\(lv\.\s*\d+\)/i, "");
-  return normalize(noLv).replace(/[^a-z0-9ก-๙ ]+/gi, "").replace(/\s+/g, " ").trim();
-}
 function extractMoney(text: string): number | null {
   const s = toArabic(text).replace(/[, ]/g, "");
   const m = s.match(/(?:฿|thb)?\s*(\d+(?:\.\d{1,2})?)(?:บาท|฿|thb)?/i);
@@ -109,7 +100,6 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
   if (n < 1 || n > max) return null;
   return n - 1;
 }
-const isDigits = (s: string) => /^\d{8,10}$/.test(toArabic(s).trim()); // UID 8–10 หลัก
 
 /* ===================== Data helpers ===================== */
 async function fetchProducts(game: GameKey) {
@@ -144,12 +134,26 @@ type Intent =
   | "help";
 
 const GI_CHARGING = [
-  "เติม genshin impact", "เติมเกนชิน", "เติม genshin", "เติม gi",
-  "top up genshin", "ซื้อ genesis", "เพชร genshin", "เจม genshin", "คริสตัล genshin",
+  "เติม genshin impact",
+  "เติมเกนชิน",
+  "เติม genshin",
+  "เติม gi",
+  "top up genshin",
+  "ซื้อ genesis",
+  "เพชร genshin",
+  "เจม genshin",
+  "คริสตัล genshin",
 ];
 const HSR_CHARGING = [
-  "เติม honkai: star rail", "เติม hsr", "เติม star rail", "เติม honkai star rail",
-  "top up hsr", "ซื้อ oneiric", "เพชร hsr", "คริสตัล hsr", "oneiric shard",
+  "เติม honkai: star rail",
+  "เติม hsr",
+  "เติม star rail",
+  "เติม honkai star rail",
+  "top up hsr",
+  "ซื้อ oneiric",
+  "เพชร hsr",
+  "คริสตัล hsr",
+  "oneiric shard",
 ];
 
 const RE_ARTIFACT_ANY = /(artifact|อาร์ติ|อาร์ติแฟกต์)/i;
@@ -161,26 +165,16 @@ function hasAny(text: string, arr: string[]) {
 }
 
 const RE_CONFIRM = /^(ยืนยัน|ตกลง|ok|โอเค|confirm)$/i;
-const RE_CANCEL = /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
-const RE_RESET = /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
+const RE_CANCEL =
+  /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
+const RE_RESET =
+  /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
 const RE_ANALYZE = /(วิเคราะห์สเตต|วิเคราะห์.*gemini|analy[sz])/i;
-
-function detectIntent(text: string): Intent | null {
-  const t = text.trim();
-  if (RE_CANCEL.test(t)) return "cancel";
-  if (RE_ARTIFACT_ANY.test(t)) return "artifact_uid";
-  if (RE_RELIC_ANY.test(t)) return "relic_uid";
-  if (hasAny(t, GI_CHARGING)) return "gi_topup";
-  if (hasAny(t, HSR_CHARGING)) return "hsr_topup";
-  if (/^(help|ช่วยด้วย|เมนู|เริ่มใหม่)$/i.test(t)) return "help";
-  return null;
-}
 
 /* ---------- Reply helpers ---------- */
 function mainMenu() {
   return {
-    reply:
-      `เมนูหลัก:
+    reply: `เมนูหลัก:
 • เติม Genshin Impact
 • เติม Honkai: Star Rail
 • ดู Artifact Genshin (ใช้ UID)
@@ -193,7 +187,9 @@ function mainMenu() {
     ],
   };
 }
-function onlyCancel() { return { quickReplies: ["ยกเลิก"] }; }
+function onlyCancel() {
+  return { quickReplies: ["ยกเลิก"] };
+}
 function sessionsReset(s: Session) {
   s.state = "idle";
   s.game = undefined;
@@ -204,17 +200,13 @@ function sessionsReset(s: Session) {
   s.productList = undefined;
   s.enka = undefined;
   s.lastAdviceError = null;
-  s.busy = false;
-  s.lastStepAt = undefined;
 }
-
-/* ===== anti-ghost helpers ===== */
-const STEP_DEBOUNCE_MS = 1200;
-const now = () => Date.now();
 
 /* ===================== Route ===================== */
 export async function POST(req: Request) {
-  const { message, username, sessionId } = (await req.json().catch(() => ({}))) as {
+  const { message, username, sessionId } = (await req
+    .json()
+    .catch(() => ({}))) as {
     message?: string;
     username?: string;
     sessionId?: string;
@@ -224,15 +216,7 @@ export async function POST(req: Request) {
   const key = clientKey(req, username, sessionId);
   const s = getSession(key);
 
-  // 1) กำลังประมวลผล → กันยิงซ้ำ
-  if (s.busy) {
-    return NextResponse.json({
-      reply: "กำลังประมวลผลอยู่นะคะ ⌛ รอสักครู่ก่อนน้า",
-      quickReplies: ["ยกเลิก"],
-    });
-  }
-
-  // 2) รีเซ็ต
+  /* ---------- Global reset ---------- */
   if (text && RE_RESET.test(text)) {
     sessions[key] = { state: "idle" };
     const menu = mainMenu();
@@ -242,64 +226,25 @@ export async function POST(req: Request) {
     });
   }
 
-  // 3) Anti-ghost guard — กันเฉพาะ “เมนู intent” ซ้อนขั้น
-  const intentNow = detectIntent(text);
-  if (s.state !== "idle" && intentNow && intentNow !== "cancel") {
-    // debounce กันกดรัว ๆ
-    if (!s.lastStepAt || now() - s.lastStepAt < STEP_DEBOUNCE_MS) {
-      const step =
-        s.state === "waiting_enka_uid" ? "ขอ UID" :
-          s.state === "waiting_pick_character" ? "เลือกตัวละคร" :
-            s.state === "picked_character" ? "วิเคราะห์สเตต" :
-              s.state === "waiting_gi" || s.state === "waiting_hsr" ? "เลือกแพ็ก" :
-                s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr" ? "ขอ UID" :
-                  s.state === "confirm_order" ? "ยืนยันคำสั่งซื้อ" : "ดำเนินการ";
-      return NextResponse.json({
-        reply: `อยู่ขั้นตอน “${step}” อยู่นะคะ ⌛ รอสักครู่ก่อน หรือพิมพ์ “ยกเลิก” เพื่อเริ่มใหม่`,
-        quickReplies: ["ยกเลิก"],
-      });
-    }
-    // ผ่าน debounce แล้ว ยังอยู่ขั้นเดิม → เตือนให้อยู่ในขั้นตอนเดิม
-    const step =
-      s.state === "waiting_enka_uid" ? "ขอ UID" :
-        s.state === "waiting_pick_character" ? "เลือกตัวละคร" :
-          s.state === "picked_character" ? "วิเคราะห์สเตต" :
-            s.state === "waiting_gi" || s.state === "waiting_hsr" ? "เลือกแพ็ก" :
-              s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr" ? "ขอ UID" :
-                s.state === "confirm_order" ? "ยืนยันคำสั่งซื้อ" : "ดำเนินการ";
-    return NextResponse.json({
-      reply: `ตอนนี้อยู่ขั้น “${step}” นะคะ ถ้าจะเริ่มใหม่พิมพ์ “ยกเลิก” ได้เลยค่า`,
-      quickReplies: ["ยกเลิก"],
-    });
-  }
-
-  /* ---------- Digit rescue: เผลอหลุด state แต่ส่ง UID เข้ามา ---------- */
-  if (isDigits(text) && (s.state === "idle" || s.state === "waiting_pick_character")) {
-    // ถ้าเพิ่งเปิดมาหน้า idle แล้วส่ง UID เลย → เด้งเข้า enka flow อัตโนมัติ (default GI)
-    s.state = "waiting_enka_uid";
-    s.lastStepAt = now();
-    s.enka = s.enka || {};
-    if (!s.enka.game) s.enka.game = "gi";
-  }
-
   /* ---------- Idle → detect intent ---------- */
   if (s.state === "idle") {
     const intent = detectIntent(text);
     if (intent === "cancel") {
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     if (intent === "gi_topup" || intent === "hsr_topup") {
       const game: GameKey = intent === "gi_topup" ? "gi" : "hsr";
       const list = await fetchProducts(game);
       s.state = game === "gi" ? "waiting_gi" : "waiting_hsr";
-      s.lastStepAt = now();
       s.game = game;
       s.productList = list;
       const head = game === "gi" ? "Genshin Impact" : "Honkai: Star Rail";
       return NextResponse.json({
-        reply:
-          `สวัสดีค่ะ เติม ${head} ได้เลย
+        reply: `สวัสดีค่ะ เติม ${head} ได้เลย
 
 ${renderProductList(list)}
 
@@ -309,10 +254,11 @@ ${renderProductList(list)}
     }
     if (intent === "artifact_uid" || intent === "relic_uid") {
       s.state = "waiting_enka_uid";
-      s.lastStepAt = now();
       s.enka = { game: intent === "artifact_uid" ? "gi" : "hsr" };
       return NextResponse.json({
-        reply: `กรุณาพิมพ์ UID ${s.enka.game === "gi" ? "Genshin" : "Star Rail"} ของคุณ (ตัวเลขเท่านั้น)`,
+        reply: `กรุณาพิมพ์ UID ${
+          s.enka.game === "gi" ? "Genshin" : "Star Rail"
+        } ของคุณ (ตัวเลขเท่านั้น)`,
         ...onlyCancel(),
       });
     }
@@ -325,7 +271,10 @@ ${renderProductList(list)}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const game: GameKey = s.state === "waiting_gi" ? "gi" : "hsr";
     const list =
@@ -364,7 +313,6 @@ ${renderProductList(list)}
     s.selectedPrice = Number(p.price);
     s.game = game;
     s.state = game === "gi" ? "waiting_uid_gi" : "waiting_uid_hsr";
-    s.lastStepAt = now();
     s.productList = undefined;
 
     return NextResponse.json({
@@ -378,7 +326,10 @@ ${renderProductList(list)}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const uidOnly = toArabic(text).replace(/\D/g, "");
     if (!uidOnly) {
@@ -396,10 +347,8 @@ ${renderProductList(list)}
     const amount = parseAmountToReceive(game, pkg);
 
     s.state = "confirm_order";
-    s.lastStepAt = now();
 
-    const reply =
-      `สรุปรายการสั่งซื้อ (รอยืนยัน)
+    const reply = `สรุปรายการสั่งซื้อ (รอยืนยัน)
 เกม: ${gameName}
 UID: ${uidOnly}
 แพ็กเกจ: ${pkg}
@@ -413,29 +362,63 @@ UID: ${uidOnly}
     });
   }
 
+  /* ---------- Confirm order ---------- */
+  if (s.state === "confirm_order") {
+    if (RE_CONFIRM.test(text)) {
+      const uid = s.uid || "-";
+      const pkg = s.selectedName || "-";
+      const price = s.selectedPrice ?? 0;
+
+      sessionsReset(s);
+
+      const reply = `รับคำยืนยันแล้วค่ะ ✅
+ยอดชำระ: ${price.toFixed(2)} บาท
+แพ็กเกจ: ${pkg}
+UID: ${uid}
+
+กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ`;
+      return NextResponse.json({
+        reply,
+        quickReplies: [],
+        paymentRequest: { showQR: true },
+      });
+    }
+    if (RE_CANCEL.test(text)) {
+      sessionsReset(s);
+      const menu = mainMenu();
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
+    }
+    return NextResponse.json({
+      reply: "กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก",
+      quickReplies: ["ยืนยัน", "ยกเลิก"],
+    });
+  }
+
   /* ---------- Artifact/Relic (ผ่าน UID Enka เท่านั้น) ---------- */
   if (s.state === "waiting_enka_uid") {
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
-
-    // รับ UID (รองรับ digit-rescue)
     const uid = toArabic(text).replace(/\D/g, "");
-    if (!uid) {
+    if (!uid)
       return NextResponse.json({
         reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ",
         ...onlyCancel(),
       });
-    }
 
     s.enka = s.enka || {};
     s.enka.uid = uid;
 
     const game = s.enka.game || "gi";
     try {
-      s.busy = true;
       const base = new URL(req.url).origin;
       const enkaUrl = `${base}/api/enka`;
 
@@ -448,34 +431,44 @@ UID: ${uidOnly}
 
       if (!j?.ok) {
         s.state = "idle";
-        s.lastStepAt = now();
         const menu = mainMenu();
         return NextResponse.json({
-          reply: "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
+          reply:
+            "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
           quickReplies: menu.quickReplies,
         });
       }
       s.state = "waiting_pick_character";
-      s.lastStepAt = now();
       s.enka.player = j.player as string;
-      s.enka.characters = j.characters as { id: number; name: string; level: number }[];
+      s.enka.characters = j.characters as {
+        id: number;
+        name: string;
+        level: number;
+      }[];
       s.enka.details = j.details as Record<string, any>;
 
-      const chips = (s.enka.characters || []).slice(0, 12).map((c) => `${c.name} (lv.${c.level})`);
+      const chips = (s.enka.characters || [])
+        .slice(0, 12)
+        .map((c) => {
+          const fromDetail = s.enka?.details?.[String(c.id)];
+          const showName: string =
+            (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
+          return `${showName} (lv.${c.level})`;
+        });
 
       return NextResponse.json({
-        reply: `⌛ กำลังดึงข้อมูลจาก Enka… สำเร็จแล้ว!
+        reply: `กำลังดึงข้อมูลจาก Enka... สำเร็จแล้ว!
 พบตัวละครของ ${j.player} (UID: ${uid})
 เลือกตัวที่อยากดูของได้เลย:`,
         quickReplies: [...chips, "ยกเลิก"],
       });
     } catch {
       s.state = "idle";
-      s.lastStepAt = now();
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ", quickReplies: menu.quickReplies });
-    } finally {
-      s.busy = false;
+      return NextResponse.json({
+        reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
   }
 
@@ -483,14 +476,16 @@ UID: ${uidOnly}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
 
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
 
-    // จับ id หรือชื่อ
-    const idMatch = text.match(/#?(\d{5,})/);
+    const idMatch = text.match(/#?(\d{6,})/);
     let target: { id: number; name: string; level: number } | null = null;
 
     if (idMatch) {
@@ -498,19 +493,24 @@ UID: ${uidOnly}
       target = chars.find((c) => c.id === pickId) || null;
     }
     if (!target) {
-      const want = normName(text);
       target =
         chars.find((c) => {
-          const a = normName(c.name || "");
-          const b = normName(details[String(c.id)]?.name || "");
-          return a === want || b === want || want.includes(a) || want.includes(b);
+          const nameFromDetail = details[String(c.id)]?.name as string | undefined;
+          const nm = (nameFromDetail || c.name || "").trim();
+          if (!nm) return false;
+          const re = new RegExp(`\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
+          return re.test(text);
         }) || null;
     }
 
     if (!target) {
-      const chips = chars.slice(0, 12).map((c) => `${c.name} (lv.${c.level})`);
+      const chips = chars.slice(0, 12).map((c) => {
+        const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
+        return `${nm} (lv.${c.level})`;
+      });
       return NextResponse.json({
-        reply: "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
+        reply:
+          "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
         quickReplies: [...chips, "ยกเลิก"],
       });
     }
@@ -518,13 +518,25 @@ UID: ${uidOnly}
     const d = details[String(target.id)] as {
       name?: string;
       artifacts?: Array<{
-        piece: string; name: string; set?: string; main: string; subs: string[]; level?: number; icon?: string;
+        piece: string;
+        name: string;
+        set?: string;
+        main: string;
+        subs: string[];
+        level?: number;
       }>;
-      totalsFromGear?: { er: number; cr: number; cd: number; em: number; hp_pct: number; atk_pct: number; def_pct: number; };
-      shownTotals?: { hp?: number; atk?: number; def?: number; em?: number; er?: number; cr?: number; cd?: number; pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number; };
+      totalsFromGear?: {
+        er: number; cr: number; cd: number; em: number;
+        hp_pct: number; atk_pct: number; def_pct: number;
+      };
+      shownTotals?: {
+        hp?: number; atk?: number; def?: number; em?: number;
+        er?: number; cr?: number; cd?: number;
+        pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number;
+      };
     };
 
-    // แนะนำเซ็ตจาก DB
+    /* ==== ดึง “ชุดที่แนะนำ” → แสดงเป็นไอคอนจาก public/pic/gi/<short>.png ==== */
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -543,35 +555,58 @@ UID: ${uidOnly}
         );
       }
       setRows = rows || [];
-    } catch { setRows = []; }
+    } catch {
+      setRows = [];
+    }
 
-    // format แถวของ + ตัดรูปอาวุธ
-    const fmtMain = (s?: string) => s ? s.replace(/^([^:]+):\s*/, (_m, stat) => `Main ${stat}: `) : "";
-    const fmtSubs = (subs?: string[]) => subs && subs.length ? ` | subs ${subs.join(", ")}` : "";
+    function shortToIcons(combo: string): string {
+      if (!combo) return "";
+      const codes = combo.split("/").map(s => s.trim()).filter(Boolean);
+      if (codes.length === 0) return "";
+      // แสดงเป็นรูปอย่างเดียว (ไม่ต้องชื่อเต็ม)
+      // ถ้าหลายโค้ดให้คั่นด้วยช่องว่างเล็ก ๆ
+      const imgs = codes.map(c =>
+        `<img src="/pic/gi/${c}.png" alt="${c}" width="20" height="20" style="vertical-align:middle;margin-right:6px" />`
+      ).join("");
+      return imgs;
+    }
+
+    const recLines: string[] = [];
+    for (const r of setRows) {
+      const combo = String((r as any).set_short || "");
+      const icons = shortToIcons(combo);
+      if (icons) recLines.push(`• ${icons}`);
+    }
+    const recSets = recLines.join("\n") || "• (ไม่พบข้อมูลในฐานข้อมูล)";
+
+    /* ==== จบส่วนไอคอน ==== */
+
+    s.state = "picked_character";
+    s.enka = s.enka || {};
+    s.enka.selectedId = target.id;
 
     const gearLines =
       (d?.artifacts || [])
-        .map(a => a.piece === "Weapon"
-          ? `• Weapon: ${a.name}${a.level ? ` (lv.${a.level})` : ""} | ${fmtMain(a.main)}${fmtSubs(a.subs)}`
-          : `• ${a.piece}: ${fmtMain(a.main)}${fmtSubs(a.subs)}`
-        )
+        .map((a) => {
+          const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
+          return `• ${a.piece}: ${a.name}${a.set ? ` (${a.set})` : ""} | main=${a.main}${subs}`;
+        })
         .join("\n") || "(ไม่พบชิ้นส่วน)";
-
-    const recSets = setRows.map(r => `• ${String((r as any).set_short || "")}`).join("\n") || "• (ไม่พบข้อมูลในฐานข้อมูล)";
 
     const shownName = d?.name || target.name || `#${target.id}`;
     const head = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
     const recHead = `Artifact/Relic ที่ฐานข้อมูลแนะนำ:`;
-    const ask = `ต้องการ “วิเคราะห์ด้วย Gemini” ไหมคะ?`;
-
-    s.state = "picked_character";
-    s.lastStepAt = now();
-    s.enka = s.enka || {};
-    s.enka.selectedId = target.id;
+    const ask = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
 
     return NextResponse.json({
-      reply: `${head}\n${gearLines}\n\n${recHead}\n${recSets}\n\n${ask}`,
-      quickReplies: ["วิเคราะห์ด้วย Gemini", "ยกเลิก"],
+      reply: `${head}
+${gearLines}
+
+${recHead}
+${recSets}
+
+${ask}`,
+      quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
     });
   }
 
@@ -580,11 +615,15 @@ UID: ${uidOnly}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     if (!RE_ANALYZE.test(text)) {
       return NextResponse.json({
-        reply: "หากต้องการให้ช่วยประเมินสเตต กด “วิเคราะห์สเตตด้วย Gemini” หรือพิมพ์วิเคราะห์ได้เลยนะคะ",
+        reply:
+          "หากต้องการให้ช่วยประเมินสเตต กด “วิเคราะห์สเตตด้วย Gemini” หรือพิมพ์วิเคราะห์ได้เลยนะคะ",
         quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
       });
     }
@@ -605,14 +644,15 @@ UID: ${uidOnly}
 
     if (game !== "gi") {
       return NextResponse.json({
-        reply: "ตอนนี้โหมดวิเคราะห์อัตโนมัติรองรับ Genshin ก่อนนะคะ (HSR จะตามมาเร็ว ๆ นี้)",
+        reply:
+          "ตอนนี้โหมดวิเคราะห์อัตโนมัติรองรับ Genshin ก่อนนะคะ (HSR จะตามมาเร็ว ๆ นี้)",
         quickReplies: ["ยกเลิก"],
       });
     }
 
     try {
-      s.busy = true;
       const base = new URL(req.url).origin;
+      const thinking = `⌛ กำลังคำนวณคำแนะนำ…`;
       const r = await fetch(`${base}/api/gi-advice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -631,15 +671,16 @@ UID: ${uidOnly}
 
       if (j?.ok && textOut) {
         return NextResponse.json({
-          reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลการวิเคราะห์สำหรับ ${d.name}:\n${textOut}`,
+          reply: `${thinking}\n\n📊 ผลการวิเคราะห์สำหรับ ${d.name}:\n${textOut}`,
           quickReplies: ["ยกเลิก"],
         });
       }
 
       const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
-      const reason = s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : "";
+      const reason =
+        s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : "";
       return NextResponse.json({
-        reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}${reason}`,
+        reply: `${thinking}\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}${reason}`,
         quickReplies: ["ยกเลิก"],
       });
     } catch (e) {
@@ -649,39 +690,35 @@ UID: ${uidOnly}
         reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})`,
         quickReplies: ["ยกเลิก"],
       });
-    } finally {
-      s.busy = false;
     }
   }
 
-  /* ---------- Fallback ---------- */
-  if (s.state = "idle") {
+  /* ---------- Fallback + Sticky step ---------- */
+  if (s.state === "idle") {
     return NextResponse.json(mainMenu());
   }
-  // Sticky reminder แทนการเด้งเมนูเฉย ๆ
-  const stateStepMap: Record<StateKey, string> = {
-    idle: "เริ่มต้น",
-    waiting_enka_uid: "ขอ UID",
-    waiting_pick_character: "เลือกตัวละคร",
-    picked_character: "วิเคราะห์สเตต",
-    waiting_gi: "เลือกแพ็ก",
-    waiting_hsr: "เลือกแพ็ก",
-    waiting_uid_gi: "ขอ UID",
-    waiting_uid_hsr: "ขอ UID",
-    confirm_order: "ยืนยันคำสั่งซื้อ",
-  };
 
-  const step = stateStepMap[s.state] ?? "ดำเนินการ";
+  const step =
+    s.state === "waiting_enka_uid" ? "ขอ UID" :
+    s.state === "waiting_pick_character" ? "เลือกตัวละคร" :
+    s.state === "picked_character" ? "วิเคราะห์สเตต" :
+    s.state === "waiting_gi" || s.state === "waiting_hsr" ? "เลือกแพ็ก" :
+    s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr" ? "ขอ UID" :
+    s.state === "confirm_order" ? "ยืนยันคำสั่งซื้อ" : "ดำเนินการ";
 
   return NextResponse.json({
-    reply: `เรายังอยู่ขั้น “${step}” อยู่นะคะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก’ เพื่อเริ่มใหม่ได้เลย~`,
+    reply:
+      `เรากำลังอยู่ที่ขั้น “${step}” อยู่เลยนะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลย~`,
     ...onlyCancel(),
   });
 }
 
 /* ===== helper fallback แบบเบา ๆ ===== */
 function simpleFallbackAdvice(
-  totals?: { er?: number; cr?: number; cd?: number; em?: number; hp_pct?: number; atk_pct?: number; def_pct?: number; },
+  totals?: {
+    er?: number; cr?: number; cd?: number; em?: number;
+    hp_pct?: number; atk_pct?: number; def_pct?: number;
+  },
   shown?: { er?: number; cr?: number; cd?: number }
 ): string {
   const cr = totals?.cr ?? (shown?.cr != null ? shown.cr * 100 : 0);
@@ -690,9 +727,22 @@ function simpleFallbackAdvice(
   const er = totals?.er != null ? totals.er + 100 : erShown ?? 0;
 
   const target = { cr: 70, cd: 140, er: 120 };
+
   const lack: string[] = [];
   if (cr < target.cr) lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
   if (cd < target.cd) lack.push(`CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`);
   if (er < target.er) lack.push(`ER ต่ำ (รวม ~${er.toFixed(0)}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`);
   return lack.length ? lack.join("\n") : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
+}
+
+/* ---------- Intent detector ---------- */
+function detectIntent(text: string): Intent | null {
+  const t = text.trim();
+  if (RE_CANCEL.test(t)) return "cancel";
+  if (RE_ARTIFACT_ANY.test(t)) return "artifact_uid";
+  if (RE_RELIC_ANY.test(t)) return "relic_uid";
+  if (hasAny(t, GI_CHARGING)) return "gi_topup";
+  if (hasAny(t, HSR_CHARGING)) return "hsr_topup";
+  if (/^(help|ช่วยด้วย|เมนู|เริ่มใหม่)$/i.test(t)) return "help";
+  return null;
 }
