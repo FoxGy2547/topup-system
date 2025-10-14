@@ -1,6 +1,6 @@
 /* src/app/api/enka/route.ts
    ดึงโปรไฟล์จาก enka.network (GI/HSR) แล้วสรุปตัวละคร + ของ/เรลิก
-   — ไม่มี any — */
+   — ไม่มี implicit any — */
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -29,17 +29,9 @@ function safeStr(v: unknown, fallback = ""): string {
   return typeof v === "string" ? v : fallback;
 }
 
-/* ---------- Types: GI (ตามโครงจริงที่ต้องใช้) ---------- */
-type GiReMain = {
-  mainPropId?: string;
-  statType?: string;
-  statValue?: number;
-};
-type GiReSub = {
-  appendPropId?: string;
-  statType?: string;
-  statValue?: number;
-};
+/* ---------- Types: GI (เฉพาะที่ใช้) ---------- */
+type GiReMain = { mainPropId?: string; statType?: string; statValue?: number };
+type GiReSub = { appendPropId?: string; statType?: string; statValue?: number };
 type GiFlat = {
   equipType?: GiSlotKey | string;
   nameText?: string;
@@ -50,11 +42,7 @@ type GiFlat = {
   reliquarySubstats?: GiReSub[];
   weaponStats?: { appendPropId?: string; statValue?: number }[];
 };
-type GiEquip = {
-  flat?: GiFlat;
-  reliquary?: { level?: number };
-  weapon?: { level?: number };
-};
+type GiEquip = { flat?: GiFlat; reliquary?: { level?: number }; weapon?: { level?: number } };
 type GiCharacter = {
   avatarId?: number;
   avatar?: { id?: number };
@@ -66,17 +54,14 @@ type GiCharacter = {
   avatarLevel?: number;
   equipList?: GiEquip[];
 };
-
 type GiTop = {
   playerInfo?: { nickname?: string };
   owner?: { nickname?: string };
   player?: { nickname?: string };
-  avatarInfoList?: GiCharacter[]; // บางเวอร์ชัน
-  playerInfoList?: unknown;
-  showAvatarInfoList?: unknown;
+  avatarInfoList?: GiCharacter[];
 };
 
-/* ---------- Types: HSR (ย่อเฉพาะที่ใช้) ---------- */
+/* ---------- Types: HSR (เฉพาะที่ใช้) ---------- */
 type HsrMain = { type?: string; value?: number };
 type HsrSub = { type?: string; value?: number };
 type HsrFlat = {
@@ -87,10 +72,7 @@ type HsrFlat = {
   relicMainstat?: HsrMain;
   relicSubstats?: HsrSub[];
 };
-type HsrRelic = {
-  flat?: HsrFlat;
-  relic?: { level?: number };
-};
+type HsrRelic = { flat?: HsrFlat; relic?: { level?: number } };
 type HsrCharacter = {
   avatarId?: number;
   avatar?: { id?: number };
@@ -105,8 +87,8 @@ type HsrTop = {
   avatarDetailList?: HsrCharacter[];
 };
 
-/* ---------- Output types ---------- */
-type ArtifactSummary = {
+/* ---------- Output ---------- */
+export type ArtifactSummary = {
   piece: GiPiece;
   name: string;
   set?: string;
@@ -115,7 +97,7 @@ type ArtifactSummary = {
   level?: number;
   icon?: string;
 };
-type RelicSummary = {
+export type RelicSummary = {
   piece: string;
   name: string;
   set?: string;
@@ -124,18 +106,16 @@ type RelicSummary = {
   level?: number;
   icon?: string;
 };
-type CharacterLite = { id: number; name: string; level: number };
-type GiDetail = { id: number; name: string; level: number; artifacts: ArtifactSummary[] };
-type HsrDetail = { id: number; name: string; level: number; relics: RelicSummary[] };
+export type CharacterLite = { id: number; name: string; level: number };
+export type GiDetail = { id: number; name: string; level: number; artifacts: ArtifactSummary[] };
+export type HsrDetail = { id: number; name: string; level: number; relics: RelicSummary[] };
 
 /* ---------- Mappers (GI) ---------- */
 function mapGiEquip(e: GiEquip): ArtifactSummary {
   const flat = e.flat ?? {};
   const slotRaw = flat.equipType;
   const slot: GiPiece =
-    (slotRaw && GI_SLOT_MAP[slotRaw as GiSlotKey]) ?
-      GI_SLOT_MAP[slotRaw as GiSlotKey] :
-      "Unknown";
+    (slotRaw && GI_SLOT_MAP[slotRaw as GiSlotKey]) ? GI_SLOT_MAP[slotRaw as GiSlotKey] : "Unknown";
 
   const name = safeStr(flat.nameText);
   const main =
@@ -169,17 +149,13 @@ function mapGiEquip(e: GiEquip): ArtifactSummary {
 function mapGiCharacter(c: GiCharacter): GiDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
   const name = c.name ?? c.avatarName ?? "Character";
-  const level =
-    c.propMap?.["4001"]?.val ??
-    c.level ??
-    c.avatarLevel ??
-    1;
+  const level = c.propMap?.["4001"]?.val ?? c.level ?? c.avatarLevel ?? 1;
 
   const equips: GiEquip[] = Array.isArray(c.equipList) ? c.equipList : [];
   const mapped: ArtifactSummary[] = equips
-    .map((eq: GiEquip) => mapGiEquip(eq))
-    .filter((x: ArtifactSummary) => x.piece !== "Weapon" && x.piece !== "Unknown")
-    .sort((a: ArtifactSummary, b: ArtifactSummary) => {
+    .map((eq) => mapGiEquip(eq))
+    .filter((x) => x.piece !== "Weapon" && x.piece !== "Unknown")
+    .sort((a, b) => {
       const order: GiPiece[] = ["Flower", "Plume", "Sands", "Goblet", "Circlet", "Weapon", "Unknown"];
       return order.indexOf(a.piece) - order.indexOf(b.piece);
     });
@@ -208,7 +184,7 @@ function mapHsrCharacter(c: HsrCharacter): HsrDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
   const name = c.name ?? c.avatarName ?? "Character";
   const level = c.level ?? 1;
-  const relics: RelicSummary[] = (c.relics ?? []).map((r: HsrRelic) => mapHsrRelic(r));
+  const relics: RelicSummary[] = (c.relics ?? []).map((r) => mapHsrRelic(r));
   return { id, name, level, relics };
 }
 
@@ -221,9 +197,7 @@ export async function POST(req: NextRequest) {
     };
     if (!uid) return NextResponse.json({ ok: false, error: "missing_uid" }, { status: 400 });
 
-    const base = game === "hsr"
-      ? "https://enka.network/api/hsr/uid/"
-      : "https://enka.network/api/uid/";
+    const base = game === "hsr" ? "https://enka.network/api/hsr/uid/" : "https://enka.network/api/uid/";
     const url = base + encodeURIComponent(uid);
 
     const r = await fetch(url, { headers: { "User-Agent": "Chatbot/1.0" }, cache: "no-store" });
@@ -232,66 +206,28 @@ export async function POST(req: NextRequest) {
     }
 
     if (game === "gi") {
-      const j = (await r.json()) as unknown as GiTop;
-
-      const list: GiCharacter[] =
-        (j.avatarInfoList as GiCharacter[] | undefined) ?? [];
-
+      const j = (await r.json()) as GiTop;
+      const list: GiCharacter[] = j.avatarInfoList ?? [];
       if (!Array.isArray(list) || list.length === 0) {
         return NextResponse.json({ ok: false, error: "no_public_characters" }, { status: 404 });
       }
-
-      const detailsArr: GiDetail[] = list.map((c: GiCharacter) => mapGiCharacter(c));
-      const characters: CharacterLite[] = detailsArr.map((d) => ({
-        id: d.id, name: d.name, level: d.level,
-      }));
-
-      const player =
-        j.playerInfo?.nickname ??
-        j.owner?.nickname ??
-        j.player?.nickname ??
-        "";
-
-      const detailsRecord: Record<string, GiDetail> =
-        Object.fromEntries(detailsArr.map((d) => [String(d.id), d]));
-
-      return NextResponse.json({
-        ok: true,
-        game: "gi",
-        player,
-        uid,
-        characters,
-        details: detailsRecord,
-      });
+      const detailsArr = list.map(mapGiCharacter);
+      const characters = detailsArr.map((d) => ({ id: d.id, name: d.name, level: d.level }));
+      const player = j.playerInfo?.nickname ?? j.owner?.nickname ?? j.player?.nickname ?? "";
+      const details = Object.fromEntries(detailsArr.map((d) => [String(d.id), d]));
+      return NextResponse.json({ ok: true, game: "gi", player, uid, characters, details });
     } else {
-      const j = (await r.json()) as unknown as HsrTop;
+      const j = (await r.json()) as HsrTop;
       const list: HsrCharacter[] =
-        j.playerDetailInfo?.avatarDetailList ??
-        j.avatarDetailList ??
-        [];
-
+        j.playerDetailInfo?.avatarDetailList ?? j.avatarDetailList ?? [];
       if (!Array.isArray(list) || list.length === 0) {
         return NextResponse.json({ ok: false, error: "no_public_characters" }, { status: 404 });
       }
-
-      const detailsArr: HsrDetail[] = list.map((c: HsrCharacter) => mapHsrCharacter(c));
-      const characters: CharacterLite[] = detailsArr.map((d) => ({
-        id: d.id, name: d.name, level: d.level,
-      }));
-
+      const detailsArr = list.map(mapHsrCharacter);
+      const characters = detailsArr.map((d) => ({ id: d.id, name: d.name, level: d.level }));
       const player = j.playerDetailInfo?.nickname ?? j.owner?.nickname ?? "";
-
-      const detailsRecord: Record<string, HsrDetail> =
-        Object.fromEntries(detailsArr.map((d) => [String(d.id), d]));
-
-      return NextResponse.json({
-        ok: true,
-        game: "hsr",
-        player,
-        uid,
-        characters,
-        details: detailsRecord,
-      });
+      const details = Object.fromEntries(detailsArr.map((d) => [String(d.id), d]));
+      return NextResponse.json({ ok: true, game: "hsr", player, uid, characters, details });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

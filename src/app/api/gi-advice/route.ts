@@ -13,11 +13,7 @@ type Row = {
   dendro_dmg_pct?: number; phys_dmg_pct?: number; physical_dmg_pct?: number;
 };
 type ElementKey = "pyro" | "hydro" | "cryo" | "electro" | "anemo" | "geo" | "dendro" | "physical";
-type StatTotals = Partial<{
-  hp: number; atk: number; def: number; em: number;
-  er: number; cr: number; cd: number;
-  elem_dmg: number;
-}>;
+type StatTotals = Partial<{ hp: number; atk: number; def: number; em: number; er: number; cr: number; cd: number; elem_dmg: number }>;
 type AdvicePayload = {
   mode?: "base" | "advice";
   character?: string;
@@ -31,7 +27,7 @@ type AdvicePayload = {
 /* ---------- DB helpers ---------- */
 const TABLES = ["gi_characters", "characters", "gi_base", "gi_character_base"];
 
-async function dbQuery(sql: string, params: any[] = []) {
+async function dbQuery(sql: string, params: unknown[] = []) {
   const mod: any = dbAny;
   if (typeof mod?.query === "function") return normalizeResult(await mod.query(sql, params));
   if (mod?.pool?.query) return normalizeResult(await mod.pool.query(sql, params));
@@ -107,12 +103,7 @@ const OVERRIDES: Record<string, Partial<StatTotals> & { er?: number; cr?: number
 function toKey(s = "") { return s.toLowerCase().replace(/\s+/g, ""); }
 function targetsFor(character: string, role?: string) {
   const key = toKey(character);
-  const base = {
-    er: role?.toLowerCase().includes("burst") || role?.toLowerCase().includes("off")
-      ? 160 : 130,
-    cr: 70,
-    cd: 140,
-  };
+  const base = { er: role?.toLowerCase().includes("burst") || role?.toLowerCase().includes("off") ? 160 : 130, cr: 70, cd: 140 };
   return { ...base, ...(OVERRIDES[key] ?? {}) };
 }
 function gap(current?: number, target?: number) {
@@ -122,15 +113,15 @@ function gap(current?: number, target?: number) {
 }
 function buildGapReport(character: string, stats?: StatTotals, role?: string) {
   const tg = targetsFor(character, role);
-  const report: Record<string, any> = {};
-  report.er = gap(stats?.er, tg.er);
-  report.cr = gap(stats?.cr, tg.cr);
-  report.cd = gap(stats?.cd, tg.cd);
-  if (tg.em) report.em = gap(stats?.em, tg.em);
-  if (tg.elem_dmg) report.elem_dmg = gap(stats?.elem_dmg, tg.elem_dmg);
+  const report: Record<string, unknown> = {};
+  (report as any).er = gap(stats?.er, tg.er);
+  (report as any).cr = gap(stats?.cr, tg.cr);
+  (report as any).cd = gap(stats?.cd, tg.cd);
+  if ((tg as any).em) (report as any).em = gap(stats?.em, (tg as any).em);
+  if ((tg as any).elem_dmg) (report as any).elem_dmg = gap(stats?.elem_dmg, (tg as any).elem_dmg);
   if (stats?.cr != null && stats?.cd != null) {
     const idealCd = +(stats.cr * 2).toFixed(1);
-    report.crit_ratio = { ideal_cd_for_cr: idealCd, ratio_ok: stats.cd >= idealCd - 10 && stats.cd <= idealCd + 30 };
+    (report as any).crit_ratio = { ideal_cd_for_cr: idealCd, ratio_ok: stats.cd >= idealCd - 10 && stats.cd <= idealCd + 30 };
   }
   return { targets: tg, gaps: report };
 }
@@ -162,7 +153,7 @@ function mergeWithBase(
 function gearToLines(gear: Record<string, any>) {
   const lines: string[] = [];
   for (const [slot, it] of Object.entries(gear || {})) {
-    lines.push(`- ${slot}: set=${it?.set ?? "-"} | main=${it?.main ?? "-"} | subs=[${(it?.subs ?? []).join(", ")}]`);
+    lines.push(`- ${slot}: set=${(it as any)?.set ?? "-"} | main=${(it as any)?.main ?? "-"} | subs=[${(((it as any)?.subs ?? []) as string[]).join(", ")}]`);
   }
   return lines.join("\n");
 }
@@ -182,13 +173,10 @@ async function callGemini(prompt: string) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY missing");
   const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + encodeURIComponent(key);
-  const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.6, maxOutputTokens: 600 },
-  };
+  const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 600 } };
   const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const j = await r.json();
-  const text = j?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") ?? j?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const text = (j?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") ?? j?.candidates?.[0]?.content?.parts?.[0]?.text ?? "") as string;
   return String(text || "").trim();
 }
 
