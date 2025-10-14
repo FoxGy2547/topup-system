@@ -1,17 +1,12 @@
-// /src/app/page.tsx
+// src/app/page.tsx
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { ocrWithFallback } from '@/lib/tess';
 
-// OCR ชิ้นส่วน + type ของ gear
-import { ocrGear, GearItem, GiSlot, HsrSlot, GameKey } from '@/lib/gear-ocr';
-
-// ✅ ตัวคำนวณรวมสเตต + ข้อแนะนำ (ใหม่)
-import { analyzeGiArtifacts, formatGiAdvice } from '@/lib/gi-calc';
-
 /* ====================== Types ====================== */
+type GameKey = 'gi' | 'hsr';
 type QuickReply = { label: string; value: string };
 type ApiResponse = {
   reply?: string;
@@ -33,11 +28,7 @@ type ChatMessage = {
   role: 'user' | 'bot' | 'preview';
   text: string;
   imageUrl?: string;
-  // ✅ โครงสร้างชุดเซ็ตจาก backend (ใช้เรนเดอร์รูป + ชื่อเต็ม)
-  sets?: {
-    game: GameKey;
-    lines: { short: string; full: string; pieces: number }[][];
-  };
+  sets?: ApiResponse['sets'];
 };
 
 /* ====================== Utils ====================== */
@@ -60,10 +51,6 @@ const splitlines = (s: string) =>
     .split(/\r?\n/)
     .map((x) => x.replace(/[ \t\f\v]+/g, ' ').trim())
     .filter(Boolean);
-
-/* ====================== Slots ====================== */
-const GI_SLOTS = ['Flower', 'Plume', 'Sands', 'Goblet', 'Circlet'] as const;
-const HSR_SLOTS = ['Head', 'Hands', 'Body', 'Feet', 'Planar Sphere', 'Link Rope'] as const;
 
 /* ====================== API helpers ====================== */
 async function callAPI(userMessage: string, username?: string): Promise<ApiResponse> {
@@ -129,7 +116,6 @@ function parseAmountCandidates(lines: string[]) {
   return out;
 }
 async function ocrSlipAmount(file: File): Promise<number | null> {
-  // ✅ ใช้ ocrWithFallback (ลอง SIMD → no-SIMD อัตโนมัติ)
   const text = await ocrWithFallback(file, 'tha+eng');
   const clean = cleanSlipText(text);
   const lines = clean.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
@@ -158,7 +144,7 @@ function getExpectedAmountFromMessages(msgs: ChatMessage[]): number | null {
   return null;
 }
 
-/* ====================== UI ====================== */
+/* ====================== UI helpers ====================== */
 const glassIndigo =
   'bg-indigo-500/25 hover:bg-indigo-500/35 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(49,46,129,.35)] transition active:scale-[.98],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
 const glassGreen =
@@ -195,11 +181,10 @@ function GlassPill({
   );
 }
 
-/* ====================== Icons + Sets (from backend) ====================== */
+/* ====================== Sets renderer ====================== */
 function getSetIconPath(game: GameKey | null | undefined, shortId: string) {
   if (!shortId) return null;
   const folder = game === 'hsr' ? 'hsr' : 'gi';
-  // ❗ ไม่ .toUpperCase() เด็ดขาด — ต้องรักษาเคสให้ตรงไฟล์จริง (เช่น EoSF.png)
   const fileName = shortId.trim();
   return `/pic/${folder}/${fileName}.png`;
 }
@@ -230,11 +215,7 @@ function SetChip({
   );
 }
 
-function AdviceFromBackend({
-  sets,
-}: {
-  sets: NonNullable<ApiResponse['sets']>;
-}) {
+function AdviceFromBackend({ sets }: { sets: NonNullable<ApiResponse['sets']> }) {
   return (
     <div className="space-y-2">
       {sets.lines.map((line, idx) => (
@@ -248,17 +229,9 @@ function AdviceFromBackend({
   );
 }
 
-/** บับเบิลข้อความของ Ruby: ถ้ามี sets ให้เรนเดอร์รูป + ชื่อเต็มตาม backend */
-function BotText({
-  text,
-  sets,
-}: {
-  text: string;
-  sets?: ApiResponse['sets'];
-}) {
+function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
   const tidyHead = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
   const lines = (text || '').split(/\r?\n/);
-
   return (
     <div className="inline-block max-w-[44rem]">
       <div
@@ -274,16 +247,12 @@ function BotText({
           <span className="text-gray-300">:</span>
           <span className="text-gray-100">{tidyHead(lines[0] || '')}</span>
         </div>
-
-        {/* ถ้ามีโครงสร้าง sets จาก backend -> เรนเดอร์ไอคอน + ชื่อเต็ม */}
         {sets ? (
           <AdviceFromBackend sets={sets} />
         ) : (
           lines.length > 1 && (
             <div className="space-y-1 text-gray-100">
-              {lines.slice(1).map((ln, i) => (
-                <div key={i}>{ln}</div>
-              ))}
+              {lines.slice(1).map((ln, i) => (<div key={i}>{ln}</div>))}
             </div>
           )
         )}
@@ -321,30 +290,13 @@ function buildMenuMap(reply: string): Record<number, string> {
   return out;
 }
 
-/* ====================== Character guess (ง่าย ๆ) ====================== */
-// ดึงชื่อคาแรคเตอร์ GI ล่าสุดจากแชทแบบหยาบ ๆ ถ้าเดาไม่ได้ → 'Furina'
-function guessGiCharacterName(msgs: ChatMessage[]): string {
-  const candidates = [
-    'Furina','Neuvillette','Xiangling','Bennett','Yelan','Raiden Shogun','Nahida','Xiao','Hu Tao','Yae Miko',
-    'Kazuha','Ganyu','Kokomi','Yoimiya','Ayaka','Ayato','Tartaglia','Zhongli','Alhaitham','Clorinde','Arlecchino'
-  ];
-  const joined = msgs.slice(-12).map(m => m.text || '').join(' ');
-  for (const name of candidates) {
-    const re = new RegExp(`\\b${name.replace(/ /g,'\\s+')}(?:\\b|$)`, 'i');
-    if (re.test(joined)) return name;
-  }
-  return 'Furina';
-}
-
-/* ====================== Page Component ====================== */
+/* ====================== Page ====================== */
 export default function Page() {
-  /* ------------ auth ------------ */
+  /* auth */
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [loggedInUser, setLoggedInUser] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-
-  // สมัครสมาชิก
   const [showRegister, setShowRegister] = useState(false);
   const [regUsername, setRegUsername] = useState('');
   const [regPassword, setRegPassword] = useState('');
@@ -381,7 +333,7 @@ export default function Page() {
     }
   };
 
-  /* balance */
+  /* balance (polling) */
   const [balance, setBalance] = useState(0);
   const requestBalance = async () => {
     if (!loggedInUser) return;
@@ -391,36 +343,26 @@ export default function Page() {
       if (j?.ok) setBalance(Number(j.balance) || 0);
     } catch {}
   };
-
-  // ===== Auto-balance polling =====
-  const VIS_POLL_MS = 20_000;     // 20s เมื่อแท็บมองเห็น
-  const HIDDEN_POLL_MS = 120_000; // 120s เมื่อแท็บถูกซ่อน
+  const VIS_POLL_MS = 20_000;
+  const HIDDEN_POLL_MS = 120_000;
   const pollTimerRef = useRef<number | null>(null);
-
   const stopBalancePolling = () => {
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
   };
-
   const startBalancePolling = () => {
     stopBalancePolling();
     const ms = document.visibilityState === 'visible' ? VIS_POLL_MS : HIDDEN_POLL_MS;
-    // ดึงครั้งแรกทันที
     requestBalance();
     pollTimerRef.current = window.setInterval(requestBalance, ms);
   };
-
-  // เริ่ม/หยุด polling ตามสถานะล็อกอิน + โฟกัส/มองเห็นแท็บ
   useEffect(() => {
     if (isLoggedIn && loggedInUser) {
       startBalancePolling();
       const onFocus = () => requestBalance();
-      const onVis = () => {
-        startBalancePolling();
-        requestBalance();
-      };
+      const onVis = () => { startBalancePolling(); requestBalance(); };
       window.addEventListener('focus', onFocus);
       document.addEventListener('visibilitychange', onVis);
       return () => {
@@ -433,14 +375,14 @@ export default function Page() {
     }
   }, [isLoggedIn, loggedInUser]);
 
-  /* ------------ chat ------------ */
+  /* chat */
   const [isOpen, setIsOpen] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const chatRef = useRef<HTMLDivElement>(null);
   const [isAutoScroll, setIsAutoScroll] = useState(true);
 
-  /* ------------ quick replies ------------ */
+  /* quick replies */
   const defaults: QuickReply[] = useMemo(
     () => [
       { label: 'เติม Genshin Impact', value: 'เติม Genshin Impact' },
@@ -453,43 +395,21 @@ export default function Page() {
   const [dynamicQR, setDynamicQR] = useState<string[]>([]);
   const [confirmMode, setConfirmMode] = useState(false);
 
-  // mapping หมายเลขเมนู
-  const [pendingNumberRange, setPendingNumberRange] = useState<{ min: number; max: number; label: string } | null>(null);
+  // สำหรับเมนูหมายเลข
+  const [pendingNumberRange, setPendingNumberRange] =
+    useState<{ min: number; max: number; label: string } | null>(null);
   const [menuMap, setMenuMap] = useState<Record<number, string>>({});
 
-  // state รอ UID
+  // รอ UID?
   const [awaitingUID, setAwaitingUID] = useState(false);
 
-  /* ------------ payment ------------ */
+  /* payment slip */
   const [showPaidButton, setShowPaidButton] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const fileSlipRef = useRef<HTMLInputElement | null>(null);
   const [paidSoFar, setPaidSoFar] = useState(0);
 
-  /* ------------ artifact / relic ------------ */
-  const [arMode, setArMode] = useState<GameKey | null>(null);
-  const [readyCalc, setReadyCalc] = useState<GameKey | null>(null);
-  const fileGearRef = useRef<HTMLInputElement | null>(null);
-
-  const [gearGi, setGearGi] = useState<Partial<Record<GiSlot, GearItem>>>({});
-  const [gearHsr, setGearHsr] = useState<Partial<Record<HsrSlot, GearItem>>>({});
-
-  const expectedSlots = useMemo(
-    () => (readyCalc === 'gi' ? (GI_SLOTS as readonly string[]) : readyCalc === 'hsr' ? (HSR_SLOTS as readonly string[]) : []),
-    [readyCalc]
-  );
-  const haveSlots = useMemo(() => {
-    if (readyCalc === 'gi') return GI_SLOTS.filter((s) => !!gearGi[s]);
-    if (readyCalc === 'hsr') return HSR_SLOTS.filter((s) => !!gearHsr[s]);
-    return [];
-  }, [readyCalc, gearGi, gearHsr]);
-  const missingSlots = useMemo(() => {
-    if (readyCalc === 'gi') return GI_SLOTS.filter((s) => !gearGi[s]);
-    if (readyCalc === 'hsr') return HSR_SLOTS.filter((s) => !gearHsr[s]);
-    return [];
-  }, [readyCalc, gearGi, gearHsr]);
-
-  /* ------------ scroll ------------ */
+  /* scroll */
   const handleScroll = () => {
     if (!chatRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = chatRef.current;
@@ -497,14 +417,12 @@ export default function Page() {
   };
   useEffect(() => {
     if (isAutoScroll && chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
-  }, [messages, isAutoScroll, haveSlots.length]);
+  }, [messages, isAutoScroll]);
 
-  /* ------------ push helpers ------------ */
+  /* push helpers */
   const pushUser = (text: string) => setMessages((p) => [...p, { role: 'user', text } as ChatMessage]);
-
   const pushBotMsg = (text: string, imageUrl?: string) =>
     setMessages((p) => [...p, { role: 'bot', text, imageUrl } as ChatMessage]);
-
   const pushPreview = (text: string, url: string) =>
     setMessages((p) => [...p, { role: 'preview', text, imageUrl: url } as ChatMessage]);
 
@@ -518,34 +436,21 @@ export default function Page() {
     const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
     const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
 
-    setMessages((p) => [...p, {
-      role: 'bot',
-      text: reply,
-      imageUrl: enforcedQR,
-      sets: data.sets, // ✅ แนบโครงสร้างเซ็ตจาก backend มาด้วย
-    } as ChatMessage]);
+    setMessages((p) => [
+      ...p,
+      { role: 'bot', text: reply, imageUrl: enforcedQR, sets: data.sets } as ChatMessage,
+    ]);
 
     setShowPaidButton(!!enforcedQR);
     if (enforcedQR) setPaidSoFar(0);
-
-    // เมื่อ bot แนะนำ artifact/relic เสร็จ → เปิดโหมดคำนวณ
-    if (/(Artifact|Relic)\s+ที่เหมาะกับ/i.test(reply)) {
-      setReadyCalc(arMode || null);
-      setGearGi({});
-      setGearHsr({});
-      setDynamicQR(['คำนวณสเตตจากรูป', 'ดูเซ็ตตัวอื่น']);
-      setConfirmMode(false);
-      setPendingNumberRange(null);
-      setMenuMap({});
-      setAwaitingUID(false);
-      return;
-    }
 
     // quick replies จาก backend
     if (Array.isArray(data.quickReplies)) {
       setDynamicQR(data.quickReplies);
       setConfirmMode(
-        data.quickReplies.length === 2 && data.quickReplies.includes('ยืนยัน') && data.quickReplies.includes('ยกเลิก')
+        data.quickReplies.length === 2 &&
+          data.quickReplies.includes('ยืนยัน') &&
+          data.quickReplies.includes('ยกเลิก')
       );
     } else {
       setDynamicQR([]);
@@ -568,7 +473,6 @@ export default function Page() {
         minSel = Math.min(...keys);
       }
       setMenuMap(menu);
-
       const label = /\bแพ็กเกจ|package/i.test(reply) ? 'แพ็กเกจ' : 'ตัวเลือก';
       setPendingNumberRange({ min: minSel, max: maxSel, label });
 
@@ -590,13 +494,12 @@ export default function Page() {
       setDynamicQR([]);
       return;
     }
-
     if (/สรุปรายการ|กรุณากดยืนยัน|ยอดชำระ|รับคำยืนยันแล้ว/i.test(reply)) {
       setAwaitingUID(false);
     }
   };
 
-  /* ------------ robust send chains ------------ */
+  /* robust send chains */
   const robustSendPackage = async (title: string, n: number | undefined, username?: string) => {
     let data = await callAPI(title, username);
     if (!isUnknownReply(data.reply)) return data;
@@ -617,7 +520,7 @@ export default function Page() {
     return data;
   };
 
-  /* ------------ ยืนยัน ------------ */
+  /* confirm flow */
   const processConfirm = async () => {
     const res = await callAPI('ยืนยัน', loggedInUser);
     pushBot(res);
@@ -664,12 +567,12 @@ export default function Page() {
     }
   };
 
-  /* ------------ send ------------ */
+  /* send */
   const handleSend = async () => {
     if (!input.trim()) return;
     const original = input.trim();
-    pushUser(original);
     setInput('');
+    pushUser(original);
     setDynamicQR([]);
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
@@ -690,37 +593,18 @@ export default function Page() {
       }
     }
 
-    if (/^ดูเซ็ตตัวอื่น$/i.test(original)) {
-      if (!arMode) {
-        pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~');
-        return;
-      }
-      setReadyCalc(null);
-      setGearGi({});
-      setGearHsr({});
-      const open = await callAPI(arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail', loggedInUser);
-      pushBot(open);
-      return;
-    }
-
-    if (arMode && !readyCalc) {
-      const data = await callAPI(original, loggedInUser);
-      pushBot(data);
-      return;
-    }
-
     const nluRes = await nlu(original);
     if (nluRes.intent === 'confirm') { await processConfirm(); return; }
     if (nluRes.intent === 'cancel') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
+
+    // เปิดเมนูดูเซ็ต (ไม่ทำ OCR/อัปโหลดแล้ว)
     if (nluRes.intent === 'artifact_gi') {
-      setArMode('gi'); setReadyCalc(null);
       const open = await callAPI('ดู artifact genshin impact', loggedInUser);
       pushBot(open);
       if (nluRes.character) { const detail = await callAPI(nluRes.character, loggedInUser); pushBot(detail); }
       return;
     }
     if (nluRes.intent === 'relic_hsr') {
-      setArMode('hsr'); setReadyCalc(null);
       const open = await callAPI('ดู relic honkai star rail', loggedInUser);
       pushBot(open);
       if (nluRes.character) { const detail = await callAPI(nluRes.character, loggedInUser); pushBot(detail); }
@@ -740,30 +624,12 @@ export default function Page() {
     if (value.trim() === 'ยืนยัน') { await processConfirm(); return; }
     if (value.trim() === 'ยกเลิก') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
-    if (value.trim() === 'ดูเซ็ตตัวอื่น') {
-      if (!arMode) { pushBotMsg('ยังไม่ได้เลือกเกมนะคะ เลือก "ดู Artifact Genshin" หรือ "ดู Relic Star Rail" ก่อนน้า~'); return; }
-      setReadyCalc(null); setGearGi({}); setGearHsr({});
-      const open = await callAPI(arMode === 'gi' ? 'ดู artifact genshin impact' : 'ดู relic honkai star rail', loggedInUser);
-      pushBot(open); return;
-    }
-
-    if (/^\d+$/.test(value) && (pendingNumberRange || Object.keys(menuMap).length)) {
-      const n = parseInt(value, 10);
-      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
-        const title = menuMap[n];
-        const data = await robustSendPackage(title, n, loggedInUser);
-        pushBot(data); return;
-      }
-    }
-
+    // ส่งให้ backend ตามปกติ
     const data = await callAPI(value, loggedInUser);
     pushBot(data);
-
-    if (/ดู artifact genshin impact/i.test(value)) { setArMode('gi'); setReadyCalc(null); }
-    if (/ดู relic honkai star rail/i.test(value)) { setArMode('hsr'); setReadyCalc(null); }
   };
 
-  /* ------------ Upload payment slip ------------ */
+  /* upload slip */
   const fileSlipOnClick = () => fileSlipRef.current?.click();
   const handleUploadSlip = async (file: File) => {
     const expectedFull = getExpectedAmountFromMessages(messages);
@@ -829,108 +695,14 @@ export default function Page() {
     }
   };
 
-  /* ------------ Upload Artifact/Relic ------------ */
-  const handleUploadGear = async (file: File) => {
-    if (!readyCalc) { pushBotMsg('ยังไม่ได้เลือกตัวละครเพื่อแนะนำก่อนนะคะ'); return; }
-    const url = URL.createObjectURL(file);
-    pushPreview(`พรีวิวชิ้นจากภาพ (${readyCalc.toUpperCase()})`, url);
-
-    try {
-      const parsed = await ocrGear(file, readyCalc);
-      const piece = parsed.piece as any;
-
-      if (readyCalc === 'gi') {
-        const slot = piece as GiSlot | undefined;
-        if (slot && (GI_SLOTS as readonly string[]).includes(slot)) {
-          const newItem: GearItem = {
-            url, piece: slot,
-            setName: parsed.setName || null,
-            mainStat: parsed.mainStat || null,
-            substats: parsed.substats || [],
-          };
-          const next = { ...gearGi, [slot]: newItem };
-          setGearGi(next);
-
-          const head = parsed.setName ? `เซ็ต: ${parsed.setName}` : 'เซ็ต: (อ่านไม่ชัด)';
-          const pieceLine = piece ? `ชิ้น: ${piece}` : 'ชิ้น: (ยังเดาไม่ได้)';
-          const main = parsed.mainStat ? `Main Stat: ${parsed.mainStat.name} ${parsed.mainStat.value}` : 'Main Stat: -';
-          const subs = parsed.substats?.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
-          pushBotMsg([head, pieceLine, main, subs].join('\n'));
-
-          const need = GI_SLOTS.filter((s) => !next[s as GiSlot]);
-          if (need.length) {
-            pushBotMsg(`รับชิ้นนี้แล้วนะคะ เหลืออีก ${need.length} ชิ้น: ${need.join(', ')}`);
-          } else {
-            const ms = GI_SLOTS.map((s) => {
-              const it = next[s as GiSlot];
-              const mainS = it?.mainStat ? ` | Main: ${it.mainStat.name} ${it.mainStat.value}` : ' | Main: -';
-              const setS = it?.setName ? it.setName : '(อ่านไม่ชัด)';
-              return `• ${s}: ${setS}${mainS}`;
-            }).join('\n');
-            pushBotMsg(`สรุป Artifact ครบ 5 ชิ้นแล้วค่ะ ✨\n${ms}`);
-
-            // ✅ คำนวณรวม + ให้คำแนะนำ "อัตโนมัติ" ทันทีเมื่อครบ 5 ชิ้น
-            try {
-              const char = guessGiCharacterName(messages);
-              const report = await analyzeGiArtifacts(char, next);
-              pushBotMsg(formatGiAdvice(report));
-            } catch {
-              // เงียบ ๆ ถ้าพลาด ไม่ให้หลุด error ไปหน้า UI
-            }
-          }
-        } else {
-          pushBotMsg('อ่านชนิดชิ้นไม่ชัดค่ะ ลองอัปโหลดใหม่อีกครั้งนะ');
-        }
-      } else {
-        const slot = piece as HsrSlot | undefined;
-        if (slot && (HSR_SLOTS as readonly string[]).includes(slot)) {
-          const newItem: GearItem = {
-            url, piece: slot,
-            setName: parsed.setName || null,
-            mainStat: parsed.mainStat || null,
-            substats: parsed.substats || [],
-          };
-          const next = { ...gearHsr, [slot]: newItem };
-          setGearHsr(next);
-
-          const head = parsed.setName ? `เซ็ต: ${parsed.setName}` : 'เซ็ต: (อ่านไม่ชัด)';
-          const pieceLine = piece ? `ชิ้น: ${piece}` : 'ชิ้น: (ยังเดาไม่ได้)';
-          const main = parsed.mainStat ? `Main Stat: ${parsed.mainStat.name} ${parsed.mainStat.value}` : 'Main Stat: -';
-          const subs = parsed.substats?.length ? parsed.substats.map((s) => `• ${s.name} ${s.value}`).join('\n') : '• (ไม่พบ substats ชัดเจน)';
-          pushBotMsg([head, pieceLine, main, subs].join('\n'));
-
-          const need = HSR_SLOTS.filter((s) => !next[s as HsrSlot]);
-          if (need.length) {
-            pushBotMsg(`รับชิ้นนี้แล้วนะคะ เหลืออีก ${need.length} ชิ้น: ${need.join(', ')}`);
-          } else {
-            const ms = HSR_SLOTS.map((s) => {
-              const it = next[s as HsrSlot];
-              const mainS = it?.mainStat ? ` | Main: ${it.mainStat.name} ${it.mainStat.value}` : ' | Main: -';
-              const setS = it?.setName ? it.setName : '(อ่านไม่ชัด)';
-              return `• ${s}: ${setS}${mainS}`;
-            }).join('\n');
-            pushBotMsg(`สรุป Relic ครบ 6 ชิ้นแล้วค่ะ ✨\n${ms}`);
-            // (ถ้าจะทำวิเคราะห์ HSR เพิ่มภายหลัง ค่อยผูกตรงนี้ได้)
-          }
-        } else {
-          pushBotMsg('อ่านชนิดชิ้นไม่ชัดค่ะ ลองอัปโหลดใหม่อีกครั้งนะ');
-        }
-      }
-    } catch {
-      pushBotMsg('อ่านจากภาพไม่สำเร็จค่ะ ลองอัปโหลดใหม่ (รูปชัด ๆ / ไม่เบลอ / ไม่มีเงา)');
-    }
-  };
-
-  /* ------------ current quick replies ------------ */
+  /* current quick replies */
   const currentQR: string[] = confirmMode
     ? ['ยืนยัน', 'ยกเลิก']
-    : readyCalc
-      ? ['คำนวณสเตตจากรูป', 'ดูเซ็ตตัวอื่น'] // ปุ่มนี้ยังมีไว้กดอัปโหลดชิ้นเพิ่ม แต่ "คำนวณ" จะรันออโต้เมื่อครบชิ้นอยู่แล้ว
-      : dynamicQR.length
-        ? dynamicQR
-        : defaults.map((q) => q.value);
+    : dynamicQR.length
+      ? dynamicQR
+      : defaults.map((q) => q.value);
 
-  /* ------------ render ------------ */
+  /* render */
   return (
     <div className="min-h-screen bg-[#0f1623] text-gray-100 flex flex-col md:flex-row p-4 gap-4">
       {/* Left: Login/Balance */}
@@ -946,7 +718,6 @@ export default function Page() {
               </p>
             </div>
             <div className="flex gap-3 justify-center">
-              {/* ลบปุ่มรีเฟรชยอดออกแล้วนะ */}
               <GlassPill
                 color="indigo"
                 onClick={() => {
@@ -957,8 +728,6 @@ export default function Page() {
                   setIsOpen(false);
                   setDynamicQR([]); setConfirmMode(false);
                   setShowPaidButton(false); setPaidSoFar(0);
-                  setArMode(null); setReadyCalc(null);
-                  setGearGi({}); setGearHsr({});
                   setPendingNumberRange(null); setMenuMap({});
                   setAwaitingUID(false);
                 }}
@@ -1133,51 +902,6 @@ export default function Page() {
                   )}
                 </div>
               ))}
-
-              {/* Grid preview of collected gear */}
-              {readyCalc && haveSlots.length > 0 && (
-                <div className="mt-2">
-                  <p className="text-sm text-gray-300 mb-2">
-                    {readyCalc === 'gi'
-                      ? `ชิ้นที่มีแล้ว (${haveSlots.length}/5): ${haveSlots.join(', ')}`
-                      : `ชิ้นที่มีแล้ว (${haveSlots.length}/6): ${haveSlots.join(', ')}`}
-                  </p>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-                    {expectedSlots.map((slotName) => {
-                      const it = readyCalc === 'gi'
-                        ? gearGi[slotName as GiSlot]
-                        : (gearHsr[slotName as HsrSlot] as GearItem | undefined);
-                      return (
-                        <div
-                          key={slotName}
-                          className="bg-white/6 backdrop-blur-md ring-1 ring-white/10 rounded-xl p-2 flex flex-col items-center justify-center"
-                        >
-                          <span className="text-xs text-gray-300 mb-1">{slotName}</span>
-                          {it?.url ? (
-                            <Image
-                              src={it.url}
-                              alt={slotName}
-                              width={140}
-                              height={180}
-                              className="rounded-md object-contain ring-1 ring-white/10"
-                            />
-                          ) : (
-                            <div className="w-[140px] h-[180px] rounded-md border border-dashed border-white/15 flex items-center justify-center text-xs text-gray-400">
-                              ยังไม่อัปโหลด
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {missingSlots.length > 0 && (
-                    <p className="text-sm text-gray-300 mt-2">
-                      เหลืออีก {missingSlots.length} ชิ้น: {missingSlots.join(', ')}
-                    </p>
-                  )}
-                </div>
-              )}
             </div>
 
             {/* Bottom buttons */}
@@ -1188,15 +912,6 @@ export default function Page() {
                 </GlassPill>
               ) : (
                 currentQR.map((value, index) => {
-                  if (value === 'คำนวณสเตตจากรูป') {
-                    const total = readyCalc === 'gi' ? 5 : 6;
-                    const have = haveSlots.length;
-                    return (
-                      <GlassPill key={`calc-${index}`} color="indigo" onClick={() => fileGearRef.current?.click()}>
-                        อัปโหลดชิ้นจากรูป ({have}/{total})
-                      </GlassPill>
-                    );
-                  }
                   const isConfirm = confirmMode && value.trim() === 'ยืนยัน';
                   const isCancel = confirmMode && value.trim() === 'ยกเลิก';
                   const color = confirmMode ? (isConfirm ? 'green' : isCancel ? 'red' : 'gray') : 'indigo';
@@ -1237,7 +952,7 @@ export default function Page() {
         )}
       </div>
 
-      {/* hidden inputs */}
+      {/* hidden input: slip only */}
       <input
         ref={fileSlipRef}
         type="file"
@@ -1247,17 +962,6 @@ export default function Page() {
           const file = e.target.files?.[0];
           if (file) await handleUploadSlip(file);
           if (fileSlipRef.current) fileSlipRef.current.value = '';
-        }}
-      />
-      <input
-        ref={fileGearRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={async (e) => {
-          const file = e.target.files?.[0];
-          if (file) await handleUploadGear(file);
-          if (fileGearRef.current) fileGearRef.current.value = '';
         }}
       />
     </div>
