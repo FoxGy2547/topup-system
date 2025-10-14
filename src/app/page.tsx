@@ -387,8 +387,8 @@ export default function Page() {
     () => [
       { label: 'เติม Genshin Impact', value: 'เติม Genshin Impact' },
       { label: 'เติม Honkai: Star Rail', value: 'เติม Honkai: Star Rail' },
-      { label: 'ดู Artifact Genshin', value: 'ดู artifact genshin impact' },
-      { label: 'ดู Relic Star Rail', value: 'ดู relic honkai star rail' },
+      { label: 'ดู Artifact Genshin (จาก UID)', value: 'ดู artifact genshin impact (จาก UID)' },
+      { label: 'ดู Relic Star Rail (จาก UID)', value: 'ดู relic honkai star rail (จาก UID)' },
     ],
     []
   );
