@@ -629,14 +629,28 @@ UID: ${uid}
     const recSets =
       setRows.map((r) => `• ${String((r as any).set_short || "")}`).join("\n") ||
       "• (ไม่พบข้อมูลในฐานข้อมูล)";
+      
+    function fmtMainLabel(s?: string) {
+      if (!s) return "";
+      // แปลง "HP: 4780" -> "Main HP: 4780"
+      return s.replace(/^([^:]+):\s*/, (_m, stat) => `Main ${stat}: `);
+    }
+    function fmtSubsList(subs?: string[]) {
+      return subs && subs.length ? ` | subs ${subs.join(", ")}` : "";
+    }
+
     const gearLines =
       (d?.artifacts || [])
         .map((a) => {
-          const subs =
-            a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
-          return `• ${a.piece}: ${a.name}${
-            a.set ? ` (${a.set})` : ""
-          } | main=${a.main}${subs}`;
+          const mainPart = fmtMainLabel(a.main);
+          const subsPart = fmtSubsList(a.subs);
+
+          if (a.piece === "Weapon") {
+            // แสดงชื่ออาวุธชัด ๆ
+            return `• Weapon: ${a.name}${a.level ? ` (lv.${a.level})` : ""} | ${mainPart}${subsPart}`;
+          }
+          // ชิ้นอาร์ติ: ใช้ชื่อชิ้นอย่างเดียว ตามที่ขอ
+          return `• ${a.piece}: ${mainPart}${subsPart}`;
         })
         .join("\n") || "(ไม่พบชิ้นส่วน)";
 
