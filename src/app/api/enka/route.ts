@@ -12,13 +12,6 @@ function giName(id?: number, fallback?: string): string {
   return (giMap as Record<string, string>)[String(id)] || fallback || `#${id}`;
 }
 
-/* ---------- แปลง icon -> URL รูปเล็กบน enka.network ---------- */
-function toUiUrl(icon?: string): string | undefined {
-  if (!icon) return undefined;
-  const file = icon.split("/").pop() || icon;
-  return `https://enka.network/ui/${file}`;
-}
-
 /* ---------- ชื่อ prop ให้อ่านง่าย (ใช้ได้ทั้ง GI/HSR) ---------- */
 const PROP_MAP: Record<string, string> = {
   FIGHT_PROP_BASE_HP: "HP",
@@ -150,7 +143,7 @@ export type ArtifactSummary = {
   main: string;
   subs: string[];
   level?: number;
-  icon?: string;
+  icon?: string; // ยังคง type เดิมไว้ เพื่อไม่ให้ระบบอื่นพัง แต่จะ "ไม่คืนค่า" (undefined)
 };
 export type RelicSummary = {
   piece: string;
@@ -159,7 +152,7 @@ export type RelicSummary = {
   main: string;
   subs: string[];
   level?: number;
-  icon?: string;
+  icon?: string; // เช่นเดียวกัน ไม่คืนค่า
 };
 
 export type CharacterLite = { id: number; name: string; level: number };
@@ -235,11 +228,11 @@ function calcTotalsFromArtifacts(arts: ArtifactSummary[]): Totals {
   return acc;
 }
 
-/* ---------- GI mappers ---------- */
+/* ---------- GI mappers (ทนเคสอาวุธ & ไม่คืน icon) ---------- */
 function mapGiEquip(e: GiEquip): ArtifactSummary {
   const flat = e.flat ?? {};
 
-  // บางเคส Enka ไม่ส่ง equipType ชัดเจน → ถ้ามี weapon object หรือระบุ WEAPON ให้ถือเป็นอาวุธแน่นอน
+  // Enka บางเคสไม่ส่ง equipType → ใช้ทั้ง flag e.weapon และเช็คข้อความ "WEAPON"
   const looksLikeWeapon =
     !!e.weapon || String(flat.equipType || "").toUpperCase().includes("WEAPON");
 
@@ -284,7 +277,7 @@ function mapGiEquip(e: GiEquip): ArtifactSummary {
     main,
     subs,
     level: e.reliquary?.level ?? e.weapon?.level ?? undefined,
-    icon: toUiUrl(flat.icon) || undefined,
+    icon: undefined, // << ไม่คืนไอคอนจาก Enka แล้วจ้า
   };
 }
 
@@ -333,7 +326,7 @@ function mapGiCharacter(c: GiCharacter): GiDetail {
   return { id, name, level, artifacts: mapped, totalsFromGear, shownTotals };
 }
 
-/* ---------- HSR mappers ---------- */
+/* ---------- HSR mappers (ไม่คืน icon) ---------- */
 function mapHsrRelic(r: HsrRelic): RelicSummary {
   const flat = r.flat ?? {};
   const main = flat.relicMainstat
@@ -347,7 +340,7 @@ function mapHsrRelic(r: HsrRelic): RelicSummary {
     main,
     subs,
     level: r.relic?.level ?? undefined,
-    icon: toUiUrl(flat.icon) || undefined,
+    icon: undefined, // << ไม่คืนไอคอนจาก Enka แล้วจ้า
   };
 }
 function mapHsrCharacter(c: HsrCharacter): HsrDetail {
