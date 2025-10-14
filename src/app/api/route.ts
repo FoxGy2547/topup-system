@@ -43,6 +43,8 @@ type Session = {
     details?: Record<string, any>;
     selectedId?: number;
   };
+  // เก็บ error ล่าสุดจาก gi-advice
+  lastAdviceError?: string | null;
 };
 
 /* ===================== Sessions ===================== */
@@ -207,6 +209,7 @@ function sessionsReset(s: Session) {
   s.uid = undefined;
   s.productList = undefined;
   s.enka = undefined;
+  s.lastAdviceError = null;
 }
 
 /* ===================== Route ===================== */
@@ -454,7 +457,6 @@ UID: ${uid}
       }[];
       s.enka.details = j.details as Record<string, any>;
 
-      // แสดงปุ่มชื่อตัวละคร
       const chips = (s.enka.characters || [])
         .slice(0, 12)
         .map((c) => {
@@ -492,7 +494,6 @@ UID: ${uid}
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
 
-    // รองรับพิมพ์ #ID
     const idMatch = text.match(/#?(\d{6,})/);
     let target: { id: number; name: string; level: number } | null = null;
 
@@ -501,7 +502,6 @@ UID: ${uid}
       target = chars.find((c) => c.id === pickId) || null;
     }
     if (!target) {
-      // จับชื่อ (รวมชื่อจาก details)
       target =
         chars.find((c) => {
           const nameFromDetail = details[String(c.id)]?.name as
@@ -676,8 +676,9 @@ UID: ${uid}
       const j = await r.json();
 
       const textOut = (j?.text || "").trim();
+      s.lastAdviceError = (j?.ok ? null : (j?.error as string)) || null;
+
       if (j?.ok && textOut) {
-        // ใส่ข้อความสถานะไว้หัวข้อความเดียวกัน
         return NextResponse.json({
           reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลการวิเคราะห์สำหรับ ${d.name}:\n${textOut}`,
           quickReplies: ["ยกเลิก"],
@@ -685,14 +686,17 @@ UID: ${uid}
       }
 
       const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
+      const reason =
+        s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : "";
       return NextResponse.json({
-        reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
+        reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}${reason}`,
         quickReplies: ["ยกเลิก"],
       });
-    } catch {
+    } catch (e) {
+      s.lastAdviceError = (e as Error)?.message || "unknown_error";
       const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
       return NextResponse.json({
-        reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
+        reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})`,
         quickReplies: ["ยกเลิก"],
       });
     }
@@ -722,32 +726,16 @@ function simpleFallbackAdvice(
   },
   shown?: { er?: number; cr?: number; cd?: number }
 ): string {
-  // totals = % from gear; shown = สัดส่วนจาก enka (1.56 = 156%)
   const cr = totals?.cr ?? (shown?.cr != null ? shown.cr * 100 : 0);
   const cd = totals?.cd ?? (shown?.cd != null ? shown.cd * 100 : 0);
   const erShown = shown?.er != null ? shown.er * 100 : undefined;
-  const er = totals?.er != null ? totals.er + 100 : (erShown ?? 0);
+  const er = totals?.er != null ? totals.er + 100 : erShown ?? 0;
 
-  // เป้าพื้นฐาน (golden-ish) ทั่วไป
   const target = { cr: 70, cd: 140, er: 120 };
 
   const lack: string[] = [];
-  if (cr < target.cr)
-    lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
-  if (cd < target.cd)
-    lack.push(
-      `CD ต่ำ (ปัจจุบัน ~${cd.toFixed(
-        0
-      )}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`
-    );
-  if (er < target.er)
-    lack.push(
-      `ER ต่ำ (รวม ~${er.toFixed(
-        0
-      )}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`
-    );
-
-  return lack.length
-    ? lack.join("\n")
-    : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
+  if (cr < target.cr) lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
+  if (cd < target.cd) lack.push(`CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`);
+  if (er < target.er) lack.push(`ER ต่ำ (รวม ~${er.toFixed(0)}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`);
+  return lack.length ? lack.join("\n") : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
 }

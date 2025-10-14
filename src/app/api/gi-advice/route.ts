@@ -1,4 +1,4 @@
-// วิเคราะห์ Artifact/Weapon ของ Genshin ด้วย Gemini + รองรับส่ง “ค่าสรุปจาก enka” เข้ามาด้วย
+// วิเคราะห์ Artifact/Weapon ของ Genshin ด้วย Gemini + แนบ golden ratio + ส่งเหตุผล error กลับให้ route หลัก
 import { NextRequest, NextResponse } from "next/server";
 
 type Totals = {
@@ -11,29 +11,12 @@ type TotalsShown = {
 };
 
 type GearPiece = {
-  piece: string;       // Weapon/Flower/Plume/Sands/Goblet/Circlet
-  name: string;
-  set?: string;
-  main: string;
-  subs: string[];
-  level?: number;
+  piece: string; name: string; set?: string; main: string; subs: string[]; level?: number;
 };
 
 type AdviceBody =
-  | {
-      mode?: "advice";
-      character: string;
-      gear: Record<string, GearPiece>;
-      totalsFromGear?: Totals;     // optional
-      shownTotals?: TotalsShown;   // optional
-    }
-  | {
-      mode: "from-enka";
-      character: string;
-      artifacts: GearPiece[];
-      totalsFromGear?: Totals;
-      shownTotals?: TotalsShown;
-    };
+  | { mode?: "advice"; character: string; gear: Record<string, GearPiece>; totalsFromGear?: Totals; shownTotals?: TotalsShown; }
+  | { mode: "from-enka"; character: string; artifacts: GearPiece[]; totalsFromGear?: Totals; shownTotals?: TotalsShown; };
 
 function makePrompt(b: AdviceBody) {
   const charName = (b as any).character;
@@ -53,71 +36,51 @@ function makePrompt(b: AdviceBody) {
 
   if ((b as any).totalsFromGear) {
     const t = (b as any).totalsFromGear as Totals;
-    lines.push(
-      `สรุปรวมจากของ+อาวุธ: ER ${t.er.toFixed(1)}% | CR ${t.cr.toFixed(1)}% | CD ${t.cd.toFixed(1)}% | EM ${t.em.toFixed(0)} | HP% ${t.hp_pct.toFixed(1)} | ATK% ${t.atk_pct.toFixed(1)} | DEF% ${t.def_pct.toFixed(1)}`
-    );
+    lines.push(`สรุปรวมจากของ+อาวุธ: ER ${t.er.toFixed(1)}% | CR ${t.cr.toFixed(1)}% | CD ${t.cd.toFixed(1)}% | EM ${t.em.toFixed(0)} | HP% ${t.hp_pct.toFixed(1)} | ATK% ${t.atk_pct.toFixed(1)} | DEF% ${t.def_pct.toFixed(1)}`);
   }
 
   if ((b as any).shownTotals) {
     const s = (b as any).shownTotals as TotalsShown;
-
-    // scale → เปอร์เซ็นต์จริง
     const pct = (x?: number) => (typeof x === "number" ? x * 100 : undefined);
-
     const hp = s.hp, atk = s.atk, def = s.def, em = s.em;
     const er = pct(s.er), cr = pct(s.cr), cd = pct(s.cd);
     const dmgList = [
       ["Pyro", pct(s.pyro)], ["Hydro", pct(s.hydro)], ["Cryo", pct(s.cryo)], ["Electro", pct(s.electro)],
       ["Anemo", pct(s.anemo)], ["Geo", pct(s.geo)], ["Dendro", pct(s.dendro)], ["Physical", pct(s.physical)],
-    ]
-      .filter((x) => typeof x[1] === "number")
-      .map((x) => `${x[0]} ${(x[1] as number).toFixed(1)}%`)
-      .join(" / ");
-
-    lines.push(
-      `ค่าสรุปบนโปรไฟล์: HP ${hp ?? "-"} | ATK ${atk ?? "-"} | DEF ${def ?? "-"} | EM ${em ?? "-"} | ER ${(er ?? 0).toFixed(1)}% | CR ${(cr ?? 0).toFixed(1)}% | CD ${(cd ?? 0).toFixed(1)}%`
-    );
+    ].filter((x) => typeof x[1] === "number").map((x) => `${x[0]} ${(x[1] as number).toFixed(1)}%`).join(" / ");
+    lines.push(`ค่าสรุปบนโปรไฟล์: HP ${hp ?? "-"} | ATK ${atk ?? "-"} | DEF ${def ?? "-"} | EM ${em ?? "-"} | ER ${(er ?? 0).toFixed(1)}% | CR ${(cr ?? 0).toFixed(1)}% | CD ${(cd ?? 0).toFixed(1)}%`);
     if (dmgList) lines.push(`DMG Bonus: ${dmgList}`);
   }
 
-  // ===== Golden ratio / แนวทางเป้าหมาย =====
-  // (generic default; ตัวละครพิเศษให้ปรับตามคอนเท็กซ์ของเมน/อาวุธที่ส่งมา)
-  lines.push(
-    [
-      "",
-      "แนวทางสัดส่วนสมดุล (Golden Ratio/เป้าหมายพื้นฐาน):",
-      "- CR ~70–80% | CD ~130–160% | ER ~120–150% (แล้วแต่ความจำเป็นกางสกิล/เบิร์ส)",
-      "- ถ้าเป็นตัวซัพพอร์ต/เบอร์สต์บ่อย ให้ให้ความสำคัญ ER ก่อน CR/CD",
-      "- เมื่อ CR ถึง ~70% ให้ดัน CD ต่อ, ถ้า CR ต่ำกว่า 60% ให้เติมจากหมวก/ซับก่อน",
-    ].join("\n")
-  );
+  lines.push("");
+  lines.push("แนวทางสัดส่วนสมดุล (Golden Ratio/เป้าหมายพื้นฐาน):");
+  lines.push("- CR ~70–80% | CD ~130–160% | ER ~120–150% (ขึ้นกับความจำเป็นในการกดเบิร์ส)");
+  lines.push("- ถึง CR ~70% แล้วค่อยดัน CD ต่อ ถ้า CR <60% ให้เติมจากหมวก/ซับก่อน");
+  lines.push("- ถ้าตัวละครเน้นซัพพอร์ต/วงเบิร์สบ่อย ให้ให้ความสำคัญ ER ก่อน CR/CD");
 
   return [
     `คุณเป็นผู้เชี่ยวชาญ Genshin Impact ช่วยวิเคราะห์อาร์ติแฟกต์ให้ “${charName}” เป็นภาษาไทยแบบสั้น กระชับ อ่านง่าย`,
     lines.join("\n"),
     `รูปแบบผลลัพธ์ (ข้อความธรรมดา ไม่ต้องมาร์กดาวน์):`,
-    `1) สรุปสเตตสำคัญที่ควรโฟกัสของตัวละครนี้ (อ้างอิง golden ratio ด้านบน ถ้าตัวนี้มีข้อยกเว้นให้ระบุ)`,
-    `2) ประเมินว่า main/sub ของแต่ละชิ้น “ดี/พอใช้/ควรเปลี่ยน” (ให้เหตุผลสั้น ๆ)`,
-    `3) ถ้า CR/CD/ER ยังต่ำกว่าเป้า ให้ชี้ว่า “ขาดอะไร” พร้อมตัวอย่างแนวทางเพิ่ม (เช่น หมวก CR, ทราย ER, ซับ ER/CR/CD)`,
+    `1) สรุปสเตตสำคัญที่ควรโฟกัส (อ้างอิง golden ratio หากไม่มีข้อยกเว้นของตัวละคร)`,
+    `2) ประเมิน main/sub รายชิ้นว่า ดี/พอใช้/ควรเปลี่ยน พร้อมเหตุผลสั้น ๆ`,
+    `3) ถ้า CR/CD/ER ยังต่ำกว่าเป้า ให้ระบุว่าขาดอะไรและควรเติมจากไหน (หมวก/ทราย/อาวุธ/ซับ)`,
   ].join("\n\n");
 }
 
 async function callGemini(prompt: string) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY missing");
-  const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
-    encodeURIComponent(key);
-  const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.6, maxOutputTokens: 700 },
-  };
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const j = (await r.json()) as any;
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + encodeURIComponent(key);
+  const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 700 } };
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const status = r.status;
+  let j: any = null;
+  try { j = await r.json(); } catch { /* ignore */ }
+  if (!r.ok) {
+    console.error("[gi-advice] gemini http error", status, j);
+    throw new Error(`gemini_http_${status}`);
+  }
   const text =
     j?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text).filter(Boolean).join("") ??
     j?.candidates?.[0]?.content?.parts?.[0]?.text ??
@@ -133,11 +96,10 @@ export async function POST(req: NextRequest) {
     try {
       text = await callGemini(prompt);
     } catch (e) {
-      // ถ้า key ไม่มี/เรียกล้มเหลว ให้บอกฝั่งหลักว่าไม่โอเค เพื่อให้เข้า fallback
-      return NextResponse.json({ ok: false, error: (e as Error)?.message || "gemini_error" }, { status: 200 });
+      const msg = (e as Error)?.message || "gemini_error";
+      return NextResponse.json({ ok: false, error: msg }, { status: 200 });
     }
     if (!text.trim()) {
-      // บังคับ fallback เมื่อ Gemini ตอบว่าง
       return NextResponse.json({ ok: false, error: "empty_text" }, { status: 200 });
     }
     return NextResponse.json({ ok: true, text, mode: (body as any).mode || "advice" });
