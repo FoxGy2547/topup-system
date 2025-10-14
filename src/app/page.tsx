@@ -181,7 +181,7 @@ function GlassPill({
   );
 }
 
-/* ====================== Sets renderer (ยังเผื่อใช้ได้) ====================== */
+/* ====================== Sets renderer ====================== */
 function getSetIconPath(game: GameKey | null | undefined, shortId: string) {
   if (!shortId) return null;
   const folder = game === 'hsr' ? 'hsr' : 'gi';
@@ -229,50 +229,9 @@ function AdviceFromBackend({ sets }: { sets: NonNullable<ApiResponse['sets']> })
   );
 }
 
-/* ========= NEW: sanitize และเรนเดอร์ HTML ที่มาจาก backend (รับเฉพาะ <img>/<br> ฯลฯ) ========= */
-function sanitizeBotHtml(src: string) {
-  let s = src || '';
-
-  // ตัด script/style ทั้งบล็อก
-  s = s.replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\1\s*>/gi, '');
-
-  // escape ทุกแท็กก่อน
-  s = s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  // คืนค่าเฉพาะแท็กที่อนุญาต โดยเฉพาะ <img> จาก /pic/ เท่านั้น
-  // 1) <br>
-  s = s.replace(/&lt;br\s*\/?&gt;/gi, '<br/>');
-
-  // 2) <b>/<strong>/<i>/<em>/<u>
-  s = s.replace(/&lt;(\/?)(b|strong|i|em|u)&gt;/gi, '<$1$2>');
-
-  // 3) <img ...>
-  s = s.replace(/&lt;img([^&]*)&gt;/gi, (_m, attrs) => {
-    const get = (name: string, def = '') => {
-      const re = new RegExp(`${name}\\s*=\\s*"(.*?)"`, 'i');
-      const m = String(attrs).match(re);
-      return m ? m[1] : def;
-    };
-    const srcAttr = get('src');
-    if (!srcAttr || !/^\/pic\//.test(srcAttr)) return ''; // ป้องกัน external
-    const alt = get('alt', '');
-    const w = get('width', '20');
-    const h = get('height', '20');
-    // บังคับ style ปลอดภัย
-    return `<img src="${srcAttr}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
-  });
-
-  return s;
-}
-
 function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
   const tidyHead = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
   const lines = (text || '').split(/\r?\n/);
-
-  // body (บรรทัดถัดจากหัว)
-  const body = lines.slice(1).join('\n');
-  const containsHtml = /<img\b|<br\b|<\/?(b|strong|i|em|u)\b/i.test(body);
-
   return (
     <div className="inline-block max-w-[44rem]">
       <div
@@ -288,15 +247,8 @@ function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
           <span className="text-gray-300">:</span>
           <span className="text-gray-100">{tidyHead(lines[0] || '')}</span>
         </div>
-
         {sets ? (
           <AdviceFromBackend sets={sets} />
-        ) : containsHtml ? (
-          <div
-            className="space-y-1 text-gray-100"
-            // แสดง HTML เฉพาะที่ผ่าน sanitize แล้ว
-            dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(body) }}
-          />
         ) : (
           lines.length > 1 && (
             <div className="space-y-1 text-gray-100">
@@ -645,7 +597,7 @@ export default function Page() {
     if (nluRes.intent === 'confirm') { await processConfirm(); return; }
     if (nluRes.intent === 'cancel') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
-    // เปิดเมนูดูเซ็ต
+    // เปิดเมนูดูเซ็ต (ไม่ทำ OCR/อัปโหลดแล้ว)
     if (nluRes.intent === 'artifact_gi') {
       const open = await callAPI('ดู artifact genshin impact', loggedInUser);
       pushBot(open);
@@ -672,6 +624,7 @@ export default function Page() {
     if (value.trim() === 'ยืนยัน') { await processConfirm(); return; }
     if (value.trim() === 'ยกเลิก') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
+    // ส่งให้ backend ตามปกติ
     const data = await callAPI(value, loggedInUser);
     pushBot(data);
   };
@@ -754,9 +707,146 @@ export default function Page() {
     <div className="min-h-screen bg-[#0f1623] text-gray-100 flex flex-col md:flex-row p-4 gap-4">
       {/* Left: Login/Balance */}
       <div className="w-full md:w-1/4 bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl ring-1 ring-white/10 p-6">
-        {/* ... (เหมือนเดิมทั้งหมด — ยกมาทั้งไฟล์ด้านบน) */}
-        {/* ย่อส่วนซ้ายเพื่อประหยัดพื้นที่ — โค้ดส่วนซ้าย unchanged จากเวอร์ชันคุณ */}
-        {/* ---- ตัดเพื่อความสั้นของคำตอบ: โค้ดฝั่ง login/register/balance เดิมทั้งหมดคงเดิม ---- */}
+        {isLoggedIn ? (
+          <>
+            <div className="text-center mb-3">
+              <p className="text-lg">
+                บัญชีที่เข้าสู่ระบบ: <span className="font-semibold">{loggedInUser}</span>
+              </p>
+              <p className="text-emerald-300 mt-2">
+                ยอดคงเหลือในกระเป๋า: <span className="font-semibold">{balance.toFixed(2)}</span> บาท
+              </p>
+            </div>
+            <div className="flex gap-3 justify-center">
+              <GlassPill
+                color="indigo"
+                onClick={() => {
+                  setIsLoggedIn(false);
+                  setLoggedInUser('');
+                  setBalance(0);
+                  setMessages([{ role: 'bot', text: 'คุณได้ออกจากระบบแล้วค่ะ' } as ChatMessage]);
+                  setIsOpen(false);
+                  setDynamicQR([]); setConfirmMode(false);
+                  setShowPaidButton(false); setPaidSoFar(0);
+                  setPendingNumberRange(null); setMenuMap({});
+                  setAwaitingUID(false);
+                }}
+              >
+                ออกจากระบบ
+              </GlassPill>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex justify-center mb-4 gap-2">
+              <button
+                className={`px-3 py-1 rounded-full text-sm ${!showRegister ? 'bg-white/15 ring-1 ring-white/20' : 'hover:bg-white/10'}`}
+                onClick={() => setShowRegister(false)}
+              >
+                เข้าสู่ระบบ
+              </button>
+              <button
+                className={`px-3 py-1 rounded-full text-sm ${showRegister ? 'bg-white/15 ring-1 ring-white/20' : 'hover:bg-white/10'}`}
+                onClick={() => setShowRegister(true)}
+              >
+                สมัครสมาชิก
+              </button>
+            </div>
+
+            {!showRegister ? (
+              <>
+                <div className="text-center mb-6">
+                  <p className="text-lg">กรุณาเข้าสู่ระบบ</p>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm mb-2 opacity-80">Username :</label>
+                  <input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ใส่ username..."
+                  />
+                </div>
+                <div className="mb-6">
+                  <label className="block text-sm mb-2 opacity-80">Password :</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ใส่ password..."
+                  />
+                </div>
+                <div className="flex justify-center">
+                  <GlassPill
+                    color="indigo"
+                    className="w-full justify-center"
+                    onClick={async () => {
+                      setIsLoggedIn(true);
+                      setLoggedInUser(username || 'user');
+                      setMessages([{ role: 'bot', text: 'คุณได้เข้าสู่ระบบแล้ว! ตอนนี้สามารถใช้แชทบอทได้ค่ะ' } as ChatMessage]);
+                      setIsOpen(true);
+                      setTimeout(requestBalance, 200);
+                    }}
+                  >
+                    เข้าสู่ระบบ
+                  </GlassPill>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-center mb-6">
+                  <p className="text-lg">สมัครสมาชิก</p>
+                </div>
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">Username :</label>
+                  <input
+                    value={regUsername}
+                    onChange={(e) => setRegUsername(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ตั้ง username..."
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">Password :</label>
+                  <input
+                    type="password"
+                    value={regPassword}
+                    onChange={(e) => setRegPassword(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="ตั้ง password..."
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-sm mb-2 opacity-80">เบอร์โทร :</label>
+                  <input
+                    value={regTel}
+                    onChange={(e) => setRegTel(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="080xxxxxxx"
+                  />
+                </div>
+                <div className="mb-6">
+                  <label className="block text-sm mb-2 opacity-80">อีเมล :</label>
+                  <input
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    className="w-full p-2 rounded-xl bg-white/10 text-gray-100 ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                    placeholder="you@example.com"
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <GlassPill color="green" className="flex-1 justify-center" onClick={handleRegister}>
+                    สมัครสมาชิก
+                  </GlassPill>
+                  <GlassPill color="gray" className="flex-1 justify-center" onClick={() => setShowRegister(false)}>
+                    กลับไปล็อกอิน
+                  </GlassPill>
+                </div>
+              </>
+            )}
+          </>
+        )}
       </div>
 
       {/* Chat */}
@@ -765,8 +855,101 @@ export default function Page() {
           <p className="opacity-80">ยินดีต้อนรับสู่หน้าแชทบอท</p>
         </main>
 
-        {/* กล่องแชท (โค้ดเหมือนเดิม) */}
-        {/* ... โค้ดส่วนแชททั้งหมดจากไฟล์เดิมของคุณอยู่ครบ ... */}
+        {isLoggedIn && isOpen && (
+          <div className="bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl ring-1 ring-white/10 flex flex-col h-[80vh]">
+            <div className="flex justify-between items-center p-4 border-b border-white/10 rounded-t-2xl">
+              <span className="font-medium text-xl">แชทบอท</span>
+              <button className="rounded-full px-2 py-1 hover:bg-white/10" onClick={() => setIsOpen(false)} aria-label="close chat">✕</button>
+            </div>
+
+            <div ref={chatRef} onScroll={handleScroll} className="p-4 overflow-y-auto flex-1 text-lg space-y-4">
+              {messages.map((msg, idx) => (
+                <div key={idx} className="space-y-2">
+                  {msg.role === 'user' ? (
+                    <div className="flex justify-end">
+                      <div className={`p-2 rounded-2xl inline-block max-w-[85%] ${bubbleUser}`}>{msg.text}</div>
+                    </div>
+                  ) : msg.role === 'preview' ? (
+                    <div className="flex justify-start">
+                      <div className="max-w-[85%] bg-white/6 backdrop-blur-md ring-1 ring-white/10 rounded-2xl p-2 shadow">
+                        <p className="mb-2 text-sm text-gray-200/80">{msg.text || 'พรีวิว'}</p>
+                        {msg.imageUrl && (
+                          <Image
+                            src={msg.imageUrl}
+                            alt="Preview"
+                            width={250}
+                            height={339}
+                            className="rounded-xl ring-1 ring-white/10 object-contain"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex justify-start">
+                      <div className="max-w-[85%]">
+                        <BotText text={msg.text} sets={msg.sets} />
+                        {msg.imageUrl && (
+                          <Image
+                            src={msg.imageUrl}
+                            alt="QR"
+                            width={250}
+                            height={339}
+                            className="mt-2 rounded-2xl ring-1 ring-white/10 max-w-full h-auto"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Bottom buttons */}
+            <div className="p-3 bg-transparent flex flex-wrap gap-3 rounded-b-2xl border-t border-white/10">
+              {showPaidButton ? (
+                <GlassPill onClick={fileSlipOnClick} disabled={verifying} color="green" className="shadow-emerald-900/40">
+                  {verifying ? 'กำลังตรวจสอบสลิป...' : 'อัปโหลดสลิป & ตรวจยอด'}
+                </GlassPill>
+              ) : (
+                currentQR.map((value, index) => {
+                  const isConfirm = confirmMode && value.trim() === 'ยืนยัน';
+                  const isCancel = confirmMode && value.trim() === 'ยกเลิก';
+                  const color = confirmMode ? (isConfirm ? 'green' : isCancel ? 'red' : 'gray') : 'indigo';
+                  const label = /^\d+$/.test(value)
+                    ? value
+                    : dynamicQR.length
+                      ? value
+                      : defaults.find((d) => d.value === value)?.label || value;
+                  return (
+                    <GlassPill key={`qr-${index}-${value}`} color={color as any} onClick={() => handleQuickReply(value)}>
+                      {label}
+                    </GlassPill>
+                  );
+                })
+              )}
+            </div>
+
+            {/* input */}
+            <div className="p-2 flex items-center gap-2 bg-transparent rounded-b-2xl">
+              <input
+                type="text"
+                placeholder={awaitingUID ? 'ใส่ UID ตัวเลขล้วน (เช่น 800000000)' : 'พิมพ์ตรงนี้เลยจ้าา'}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                className="w-full rounded-full px-4 py-2 text-gray-100 bg-white/10 backdrop-blur-md ring-1 ring-white/10 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+              />
+              <GlassPill color="indigo" onClick={handleSend}>→</GlassPill>
+            </div>
+          </div>
+        )}
+
+        {!isLoggedIn && <p className="text-center text-rose-300/90 mt-4">กรุณาเข้าสู่ระบบก่อนใช้งานแชทบอทค่ะ</p>}
+        {!isOpen && isLoggedIn && (
+          <div className="mx-auto mt-2">
+            <GlassPill color="indigo" onClick={() => setIsOpen(true)}>💬 แชทกับเรา</GlassPill>
+          </div>
+        )}
       </div>
 
       {/* hidden input: slip only */}
