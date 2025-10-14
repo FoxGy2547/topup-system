@@ -229,16 +229,44 @@ function AdviceFromBackend({ sets }: { sets: NonNullable<ApiResponse['sets']> })
   );
 }
 
+/* ====================== Sanitize & BotText ====================== */
+function sanitizeBotHtml(src: string) {
+  let s = src || '';
+  s = s.replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\1\s*>/gi, '');
+  s = s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  s = s.replace(/&lt;br\s*\/?&gt;/gi, '<br/>');
+  s = s.replace(/&lt;(\/?)(b|strong|i|em|u)&gt;/gi, '<$1$2>');
+  s = s.replace(/&lt;img([^&]*)&gt;/gi, (_m, attrs) => {
+    const get = (name: string, def = '') => {
+      const re = new RegExp(`${name}\\s*=\\s*"(.*?)"`, 'i');
+      const m = String(attrs).match(re);
+      return m ? m[1] : def;
+    };
+    const srcAttr = get('src');
+    if (!srcAttr || !/^\/pic\//.test(srcAttr)) return '';
+    const alt = get('alt', '');
+    const w = get('width', '20');
+    const h = get('height', '20');
+    return `<img src="${srcAttr}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
+  });
+  return s;
+}
+
 function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
   const tidyHead = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
   const lines = (text || '').split(/\r?\n/);
+  const body = lines.slice(1).join('\n');
+
+  // ✅ ปรับให้จับทุกเคส: ทั้งแท็กจริง "<...>" และอักษรที่ถูก encode "&lt;...&gt;"
+  const containsHtml = /<|&lt;/.test(body);
+
   return (
     <div className="inline-block max-w-[44rem]">
       <div
         className={[
           'relative px-4 py-2 rounded-2xl text-[0.98rem] leading-relaxed whitespace-pre-wrap break-words',
           'bg-white/8 backdrop-blur-md ring-3 ring-white/15',
-          'shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_28px_rgba(0,0,0,.35)]',
+          'shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_28px_rgba(0,0,0,0.35)]',
           'before:absolute before:-top-0.5 before:left-3 before:right-3 before:h-[2px] before:rounded-full before:bg-white/60 before:opacity-70 before:blur-[1px]',
         ].join(' ')}
       >
@@ -247,8 +275,14 @@ function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
           <span className="text-gray-300">:</span>
           <span className="text-gray-100">{tidyHead(lines[0] || '')}</span>
         </div>
+
         {sets ? (
           <AdviceFromBackend sets={sets} />
+        ) : containsHtml ? (
+          <div
+            className="space-y-1 text-gray-100"
+            dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(body) }}
+          />
         ) : (
           lines.length > 1 && (
             <div className="space-y-1 text-gray-100">
@@ -624,7 +658,6 @@ export default function Page() {
     if (value.trim() === 'ยืนยัน') { await processConfirm(); return; }
     if (value.trim() === 'ยกเลิก') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
-    // ส่งให้ backend ตามปกติ
     const data = await callAPI(value, loggedInUser);
     pushBot(data);
   };
