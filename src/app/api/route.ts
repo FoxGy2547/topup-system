@@ -88,6 +88,11 @@ function normalize(s: string) {
     .trim()
     .toLowerCase();
 }
+/** ใช้สำหรับเทียบชื่อ: ตัด (lv.xx), ตัดสัญลักษณ์, บีบช่องว่าง */
+function normName(s: string) {
+  const noLv = s.replace(/\(lv\.\s*\d+\)/i, "");
+  return normalize(noLv).replace(/[^a-z0-9ก-๙ ]+/gi, "").replace(/\s+/g, " ").trim();
+}
 function extractMoney(text: string): number | null {
   const s = toArabic(text).replace(/[, ]/g, "");
   const m = s.match(/(?:฿|thb)?\s*(\d+(?:\.\d{1,2})?)(?:บาท|฿|thb)?/i);
@@ -234,7 +239,7 @@ export async function POST(req: Request) {
   /* ---------- ถ้ากำลัง busy อยู่ ให้บอกก่อน ---------- */
   if (s.busy) {
     return NextResponse.json({
-      reply: "กำลังประมวลผลอยู่นะคะ ⌛ รอสักครู่น้า",
+      reply: "กำลังประมวลผลอยู่นะคะ ⌛ รอสักครู่ก่อนน้า",
       quickReplies: ["ยกเลิก"],
     });
   }
@@ -467,10 +472,6 @@ UID: ${uid}
       const base = new URL(req.url).origin;
       const enkaUrl = `${base}/api/enka`;
 
-      // ให้ฝั่ง UI แสดงสถานะ
-      // (ถ้าฝั่ง UI รองรับข้อความเดียว เราจะใส่บรรทัดสถานะไว้ในผลลัพธ์ถัดไปด้วย)
-      // ตรงนี้ส่งต่อเลย ไม่รอข้อความกลาง
-
       const r = await fetch(enkaUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -498,15 +499,12 @@ UID: ${uid}
 
       const chips = (s.enka.characters || [])
         .slice(0, 12)
-        .map((c) => {
-          const fromDetail = s.enka?.details?.[String(c.id)];
-          const showName: string =
-            (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
-          return `${showName} (lv.${c.level})`;
-        });
+        .map((c) => `${c.name} (lv.${c.level})`);
 
       return NextResponse.json({
-        reply: `⌛ กำลังดึงข้อมูลจาก Enka… สำเร็จแล้ว!\nพบตัวละครของ ${j.player} (UID: ${uid})\nเลือกตัวที่อยากดูของได้เลย:`,
+        reply: `⌛ กำลังดึงข้อมูลจาก Enka… สำเร็จแล้ว!
+พบตัวละครของ ${j.player} (UID: ${uid})
+เลือกตัวที่อยากดูของได้เลย:`,
         quickReplies: [...chips, "ยกเลิก"],
       });
     } catch {
@@ -534,34 +532,27 @@ UID: ${uid}
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
 
-    const idMatch = text.match(/#?(\d{6,})/);
+    // 1) เลือกด้วย #ID (รองรับ label ที่มี lv. ตามหลัง)
+    const idPick = text.match(/#?(\d{5,})/);
     let target: { id: number; name: string; level: number } | null = null;
-
-    if (idMatch) {
-      const pickId = Number(idMatch[1]);
+    if (idPick) {
+      const pickId = Number(idPick[1]);
       target = chars.find((c) => c.id === pickId) || null;
     }
+
+    // 2) เลือกด้วยชื่อ (ตัด "(lv.xx)" ก่อนเทียบ และ normalize หนักๆ)
     if (!target) {
+      const want = normName(text);
       target =
         chars.find((c) => {
-          const nameFromDetail = details[String(c.id)]?.name as
-            | string
-            | undefined;
-          const nm = (nameFromDetail || c.name || "").trim();
-          if (!nm) return false;
-          const re = new RegExp(
-            `\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`,
-            "i"
-          );
-          return re.test(text);
+          const a = normName(c.name || "");
+          const b = normName(details[String(c.id)]?.name || "");
+          return a === want || b === want || want.includes(a) || want.includes(b);
         }) || null;
     }
 
     if (!target) {
-      const chips = chars.slice(0, 12).map((c) => {
-        const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
-        return `${nm} (lv.${c.level})`;
-      });
+      const chips = chars.slice(0, 12).map((c) => `${c.name} (lv.${c.level})`);
       return NextResponse.json({
         reply:
           "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
@@ -607,7 +598,12 @@ UID: ${uid}
       };
     };
 
-    // ดึงชุดจาก DB
+    // เก็บ context
+    s.state = "picked_character";
+    s.enka = s.enka || {};
+    s.enka.selectedId = target.id;
+
+    // เซ็ตแนะนำจาก DB
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -629,11 +625,6 @@ UID: ${uid}
     } catch {
       setRows = [];
     }
-
-    // เก็บ context
-    s.state = "picked_character";
-    s.enka = s.enka || {};
-    s.enka.selectedId = target.id;
 
     const recSets =
       setRows.map((r) => `• ${String((r as any).set_short || "")}`).join("\n") ||
