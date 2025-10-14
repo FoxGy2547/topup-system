@@ -468,7 +468,7 @@ UID: ${uid}
       const chips = (s.enka.characters || []).slice(0, 12).map((c) => `${c.name} (lv.${c.level})`);
 
       return NextResponse.json({
-        reply: `⌛ กำลังดึงข้อมูลจาก Enka… สำเร็จแล้ว!
+        reply: `ดึงข้อมูลจาก Enka… สำเร็จแล้ว!
 พบตัวละครของ ${j.player} (UID: ${uid})
 เลือกตัวที่อยากดูของได้เลย:`,
         quickReplies: [...chips, "ยกเลิก"],
