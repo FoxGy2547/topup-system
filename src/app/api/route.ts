@@ -219,8 +219,8 @@ function mainMenu() {
     quickReplies: [
       "เติม Genshin Impact",
       "เติม Honkai: Star Rail",
-      "ดู Artifact Genshin",
-      "ดู Relic Star Rail",
+      "ดู Artifact Genshin (จาก UID)",
+      "ดู Relic Star Rail (จาก UID)",
     ],
   };
 }
