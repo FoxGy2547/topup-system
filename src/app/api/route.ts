@@ -1,4 +1,3 @@
-// src/app/api/route.ts
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
 
@@ -21,7 +20,8 @@ type StateKey =
   | "waiting_uid_hsr"
   | "confirm_order"
   | "waiting_enka_uid"
-  | "waiting_pick_character";
+  | "waiting_pick_character"
+  | "picked_character"; // << เพิ่ม
 
 type Session = {
   state: StateKey;
@@ -41,6 +41,7 @@ type Session = {
     player?: string;
     characters?: { id: number; name: string; level: number }[];
     details?: Record<string, any>;
+    selectedId?: number; // << เพิ่ม
   };
 };
 
@@ -130,16 +131,30 @@ type Intent =
   | "help";
 
 const GI_CHARGING = [
-  "เติม genshin impact", "เติมเกนชิน", "เติม genshin", "เติม gi",
-  "top up genshin", "ซื้อ genesis", "เพชร genshin", "เจม genshin", "คริสตัล genshin",
+  "เติม genshin impact",
+  "เติมเกนชิน",
+  "เติม genshin",
+  "เติม gi",
+  "top up genshin",
+  "ซื้อ genesis",
+  "เพชร genshin",
+  "เจม genshin",
+  "คริสตัล genshin",
 ];
 const HSR_CHARGING = [
-  "เติม honkai: star rail", "เติม hsr", "เติม star rail", "เติม honkai star rail",
-  "top up hsr", "ซื้อ oneiric", "เพชร hsr", "คริสตัล hsr", "oneiric shard",
+  "เติม honkai: star rail",
+  "เติม hsr",
+  "เติม star rail",
+  "เติม honkai star rail",
+  "top up hsr",
+  "ซื้อ oneiric",
+  "เพชร hsr",
+  "คริสตัล hsr",
+  "oneiric shard",
 ];
 
 const RE_ARTIFACT_ANY = /(artifact|อาร์ติ|อาร์ติแฟกต์)/i;
-const RE_RELIC_ANY     = /(relic|เรลิก)/i;
+const RE_RELIC_ANY = /(relic|เรลิก)/i;
 
 function hasAny(text: string, arr: string[]) {
   const t = normalize(text);
@@ -147,15 +162,17 @@ function hasAny(text: string, arr: string[]) {
 }
 
 const RE_CONFIRM = /^(ยืนยัน|ตกลง|ok|โอเค|confirm)$/i;
-const RE_CANCEL  = /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
-const RE_RESET   = /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
+const RE_CANCEL = /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
+const RE_RESET =
+  /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
+const RE_ANALYZE = /(วิเคราะห์สเตต|วิเคราะห์.*gemini|analy[sz])/i; // << เพิ่ม
 
 function detectIntent(text: string): Intent | null {
   const t = text.trim();
   if (RE_CANCEL.test(t)) return "cancel";
   if (RE_ARTIFACT_ANY.test(t)) return "artifact_uid";
-  if (RE_RELIC_ANY.test(t))     return "relic_uid";
-  if (hasAny(t, GI_CHARGING))  return "gi_topup";
+  if (RE_RELIC_ANY.test(t)) return "relic_uid";
+  if (hasAny(t, GI_CHARGING)) return "gi_topup";
   if (hasAny(t, HSR_CHARGING)) return "hsr_topup";
   if (/^(help|ช่วยด้วย|เมนู|เริ่มใหม่)$/i.test(t)) return "help";
   return null;
@@ -164,8 +181,7 @@ function detectIntent(text: string): Intent | null {
 /* ---------- Reply helpers ---------- */
 function mainMenu() {
   return {
-    reply:
-`เมนูหลัก:
+    reply: `เมนูหลัก:
 • เติม Genshin Impact
 • เติม Honkai: Star Rail
 • ดู Artifact Genshin (ใช้ UID)
@@ -194,7 +210,9 @@ function sessionsReset(s: Session) {
 
 /* ===================== Route ===================== */
 export async function POST(req: Request) {
-  const { message, username, sessionId } = (await req.json().catch(() => ({}))) as {
+  const { message, username, sessionId } = (await req
+    .json()
+    .catch(() => ({}))) as {
     message?: string;
     username?: string;
     sessionId?: string;
@@ -219,7 +237,10 @@ export async function POST(req: Request) {
     const intent = detectIntent(text);
     if (intent === "cancel") {
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     if (intent === "gi_topup" || intent === "hsr_topup") {
       const game: GameKey = intent === "gi_topup" ? "gi" : "hsr";
@@ -229,8 +250,7 @@ export async function POST(req: Request) {
       s.productList = list;
       const head = game === "gi" ? "Genshin Impact" : "Honkai: Star Rail";
       return NextResponse.json({
-        reply:
-`สวัสดีค่ะ เติม ${head} ได้เลย
+        reply: `สวัสดีค่ะ เติม ${head} ได้เลย
 
 ${renderProductList(list)}
 
@@ -242,7 +262,9 @@ ${renderProductList(list)}
       s.state = "waiting_enka_uid";
       s.enka = { game: intent === "artifact_uid" ? "gi" : "hsr" };
       return NextResponse.json({
-        reply: `กรุณาพิมพ์ UID ${s.enka.game === "gi" ? "Genshin" : "Star Rail"} ของคุณ (ตัวเลขเท่านั้น)`,
+        reply: `กรุณาพิมพ์ UID ${
+          s.enka.game === "gi" ? "Genshin" : "Star Rail"
+        } ของคุณ (ตัวเลขเท่านั้น)`,
         ...onlyCancel(),
       });
     }
@@ -255,7 +277,10 @@ ${renderProductList(list)}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const game: GameKey = s.state === "waiting_gi" ? "gi" : "hsr";
     const list =
@@ -307,7 +332,10 @@ ${renderProductList(list)}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const uidOnly = toArabic(text).replace(/\D/g, "");
     if (!uidOnly) {
@@ -326,8 +354,7 @@ ${renderProductList(list)}
 
     s.state = "confirm_order";
 
-    const reply =
-`สรุปรายการสั่งซื้อ (รอยืนยัน)
+    const reply = `สรุปรายการสั่งซื้อ (รอยืนยัน)
 เกม: ${gameName}
 UID: ${uidOnly}
 แพ็กเกจ: ${pkg}
@@ -350,8 +377,7 @@ UID: ${uidOnly}
 
       sessionsReset(s);
 
-      const reply =
-`รับคำยืนยันแล้วค่ะ ✅
+      const reply = `รับคำยืนยันแล้วค่ะ ✅
 ยอดชำระ: ${price.toFixed(2)} บาท
 แพ็กเกจ: ${pkg}
 UID: ${uid}
@@ -366,7 +392,10 @@ UID: ${uid}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     return NextResponse.json({
       reply: "กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก",
@@ -379,10 +408,17 @@ UID: ${uid}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const uid = toArabic(text).replace(/\D/g, "");
-    if (!uid) return NextResponse.json({ reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ", ...onlyCancel() });
+    if (!uid)
+      return NextResponse.json({
+        reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ",
+        ...onlyCancel(),
+      });
 
     s.enka = s.enka || {};
     s.enka.uid = uid;
@@ -403,13 +439,18 @@ UID: ${uid}
         s.state = "idle";
         const menu = mainMenu();
         return NextResponse.json({
-          reply: "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
+          reply:
+            "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
           quickReplies: menu.quickReplies,
         });
       }
       s.state = "waiting_pick_character";
       s.enka.player = j.player as string;
-      s.enka.characters = j.characters as { id: number; name: string; level: number }[];
+      s.enka.characters = j.characters as {
+        id: number;
+        name: string;
+        level: number;
+      }[];
       s.enka.details = j.details as Record<string, any>;
 
       // ✅ ใช้ชื่อจาก details เป็นหลัก ถ้าไม่มีค่อย fallback
@@ -423,13 +464,17 @@ UID: ${uid}
         });
 
       return NextResponse.json({
-        reply: `พบตัวละครของ ${j.player} (UID: ${uid})\nเลือกตัวที่อยากดูของได้เลย:`,
+        reply: `พบตัวละครของ ${j.player} (UID: ${uid})
+เลือกตัวที่อยากดูของได้เลย:`,
         quickReplies: [...chips, "ยกเลิก"],
       });
     } catch {
       s.state = "idle";
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
   }
 
@@ -437,15 +482,18 @@ UID: ${uid}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
 
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
 
-    // ✅ รองรับเลือกด้วย #รหัส (จากปุ่มที่แสดงเป็น #ID)
+    // ✅ รองรับเลือกด้วย #รหัส
     const idMatch = text.match(/#?(\d{6,})/);
-    let target = null as { id: number; name: string; level: number } | null;
+    let target: { id: number; name: string; level: number } | null = null;
 
     if (idMatch) {
       const pickId = Number(idMatch[1]);
@@ -453,24 +501,29 @@ UID: ${uid}
     }
     if (!target) {
       // จับคู่ด้วยชื่อ (รวมชื่อจาก details)
-      target = chars.find((c) => {
-        const nameFromDetail = details[String(c.id)]?.name as string | undefined;
-        const nm = (nameFromDetail || c.name || "").trim();
-        if (!nm) return false;
-        const re = new RegExp(`\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
-        return re.test(text);
-      }) || null;
+      target =
+        chars.find((c) => {
+          const nameFromDetail = details[String(c.id)]?.name as
+            | string
+            | undefined;
+          const nm = (nameFromDetail || c.name || "").trim();
+          if (!nm) return false;
+          const re = new RegExp(
+            `\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`,
+            "i"
+          );
+          return re.test(text);
+        }) || null;
     }
 
     if (!target) {
-      const chips = chars
-        .slice(0, 12)
-        .map((c) => {
-          const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
-          return `${nm} (lv.${c.level})`;
-        });
+      const chips = chars.slice(0, 12).map((c) => {
+        const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
+        return `${nm} (lv.${c.level})`;
+      });
       return NextResponse.json({
-        reply: "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
+        reply:
+          "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
         quickReplies: [...chips, "ยกเลิก"],
       });
     }
@@ -478,9 +531,39 @@ UID: ${uid}
     const d = details[String(target.id)] as {
       name?: string;
       artifacts?: Array<{
-        piece: string; name: string; set?: string; main: string; subs: string[]; level?: number;
+        piece: string;
+        name: string;
+        set?: string;
+        main: string;
+        subs: string[];
+        level?: number;
       }>;
-      totals?: Record<string, number>;
+      totalsFromGear?: {
+        er: number;
+        cr: number;
+        cd: number;
+        em: number;
+        hp_pct: number;
+        atk_pct: number;
+        def_pct: number;
+      };
+      shownTotals?: {
+        hp?: number;
+        atk?: number;
+        def?: number;
+        em?: number;
+        er?: number;
+        cr?: number;
+        cd?: number;
+        pyro?: number;
+        hydro?: number;
+        cryo?: number;
+        electro?: number;
+        anemo?: number;
+        geo?: number;
+        dendro?: number;
+        physical?: number;
+      };
     };
 
     // แนะนำเซ็ตจาก DB
@@ -506,13 +589,24 @@ UID: ${uid}
       setRows = [];
     }
 
-    s.state = "idle";
+    // เก็บ context เพื่อกดวิเคราะห์ต่อ
+    s.state = "picked_character";
+    s.enka = s.enka || {};
+    s.enka.selectedId = target.id;
 
-    const recSets = setRows.map((r) => `• ${String((r as any).set_short || "")}`).join("\n") || "• (ไม่พบข้อมูลในฐานข้อมูล)";
-    const gearLines = (d?.artifacts || []).map((a) => {
-      const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
-      return `• ${a.piece}: ${a.name}${a.set ? ` (${a.set})` : ""} | main=${a.main}${subs}`;
-    }).join("\n") || "(ไม่พบชิ้นส่วน)";
+    const recSets =
+      setRows.map((r) => `• ${String((r as any).set_short || "")}`).join("\n") ||
+      "• (ไม่พบข้อมูลในฐานข้อมูล)";
+    const gearLines =
+      (d?.artifacts || [])
+        .map((a) => {
+          const subs =
+            a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
+          return `• ${a.piece}: ${a.name}${
+            a.set ? ` (${a.set})` : ""
+          } | main=${a.main}${subs}`;
+        })
+        .join("\n") || "(ไม่พบชิ้นส่วน)";
 
     const shownName = d?.name || target.name || `#${target.id}`;
     const head = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
@@ -525,6 +619,80 @@ UID: ${uid}
     });
   }
 
+  // ===== วิเคราะห์หลังเลือกตัวละคร =====
+  if (s.state === "picked_character") {
+    if (RE_CANCEL.test(text)) {
+      sessionsReset(s);
+      const menu = mainMenu();
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
+    }
+    if (!RE_ANALYZE.test(text)) {
+      return NextResponse.json({
+        reply:
+          "หากต้องการให้ช่วยประเมินสเตต กด “วิเคราะห์สเตตด้วย Gemini” หรือพิมพ์วิเคราะห์ได้เลยนะคะ",
+        quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
+      });
+    }
+
+    const game = s.enka?.game || "gi";
+    const id = s.enka?.selectedId;
+    const details = s.enka?.details || {};
+    const d = id ? details[String(id)] : null;
+
+    if (!d) {
+      sessionsReset(s);
+      const menu = mainMenu();
+      return NextResponse.json({
+        reply: "ไม่พบข้อมูลตัวละครสำหรับวิเคราะห์ค่ะ ลองเริ่มใหม่อีกครั้งนะคะ",
+        quickReplies: menu.quickReplies,
+      });
+    }
+
+    if (game !== "gi") {
+      return NextResponse.json({
+        reply:
+          "ตอนนี้โหมดวิเคราะห์อัตโนมัติรองรับ Genshin ก่อนนะคะ (HSR จะตามมาเร็ว ๆ นี้)",
+        quickReplies: ["ยกเลิก"],
+      });
+    }
+
+    try {
+      const base = new URL(req.url).origin;
+      const r = await fetch(`${base}/api/gi-advice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "from-enka",
+          character: d.name || `#${id}`,
+          artifacts: d.artifacts || [],
+          totalsFromGear: d.totalsFromGear,
+          shownTotals: d.shownTotals,
+        }),
+      });
+      const j = await r.json();
+      if (j?.ok) {
+        return NextResponse.json({
+          reply: `สรุปคำแนะนำสำหรับ ${d.name}:\n${j.text}`,
+          quickReplies: ["ยกเลิก"],
+        });
+      }
+      const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
+      return NextResponse.json({
+        reply: `สรุปคำแนะนำ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
+        quickReplies: ["ยกเลิก"],
+      });
+    } catch {
+      const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
+      return NextResponse.json({
+        reply: `สรุปคำแนะนำ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
+        quickReplies: ["ยกเลิก"],
+      });
+    }
+  }
+
   /* ---------- Fallback ---------- */
   if (s.state === "idle") {
     return NextResponse.json(mainMenu());
@@ -534,4 +702,49 @@ UID: ${uid}
       "ขอโทษค่ะ ตอนนี้กำลังอยู่ในขั้นตอนก่อนหน้าอยู่ค่ะ กรุณาตอบให้ตรงขั้นตอน หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลยนะคะ~",
     ...onlyCancel(),
   });
+}
+
+/* ===== helper fallback แบบเบา ๆ ===== */
+function simpleFallbackAdvice(
+  totals?: {
+    er?: number;
+    cr?: number;
+    cd?: number;
+    em?: number;
+    hp_pct?: number;
+    atk_pct?: number;
+    def_pct?: number;
+  },
+  shown?: { er?: number; cr?: number; cd?: number }
+): string {
+  // totals เป็น % สะสมจากของ/อาวุธอยู่แล้ว
+  // shown เป็นสัดส่วน (1.56 = 156%) จาก enka
+  const cr = totals?.cr ?? (shown?.cr != null ? shown.cr * 100 : 0);
+  const cd = totals?.cd ?? (shown?.cd != null ? shown.cd * 100 : 0);
+  const erTotal = shown?.er != null ? shown.er * 100 : undefined;
+  const er =
+    totals?.er != null
+      ? totals.er + 100 // เปลี่ยนเป็นรวม
+      : erTotal ?? 0;
+
+  // เป้า default สำหรับ DPS ทั่วไป
+  const target = { cr: 70, cd: 140, er: 120 };
+
+  const lack: string[] = [];
+  if (cr < target.cr)
+    lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
+  if (cd < target.cd)
+    lack.push(
+      `CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`
+    );
+  if (er < target.er)
+    lack.push(
+      `ER ต่ำ (รวม ~${er.toFixed(
+        0
+      )}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`
+    );
+
+  if (!lack.length)
+    return "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
+  return lack.join("\n");
 }

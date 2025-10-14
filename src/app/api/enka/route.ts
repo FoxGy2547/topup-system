@@ -3,7 +3,7 @@
    — ไม่มี implicit any —
 */
 import { NextRequest, NextResponse } from "next/server";
-import giMap from "@/data/gi_characters.json"; // << เพิ่ม: ใช้ map id -> ชื่อจริง
+import giMap from "@/data/gi_characters.json"; // ใช้ map id -> ชื่อจริง
 
 type GameKey = "gi" | "hsr";
 
@@ -210,18 +210,41 @@ function parseLineToTotal(line: string, acc: Totals): void {
   const v = Number(vRaw);
   if (!Number.isFinite(v)) return;
   switch (kRaw) {
-    case "Energy Recharge%": acc.er += v; break;
-    case "CRIT Rate%": acc.cr += v; break;
-    case "CRIT DMG%": acc.cd += v; break;
-    case "Elemental Mastery": acc.em += v; break;
-    case "HP%": acc.hp_pct += v; break;
-    case "ATK%": acc.atk_pct += v; break;
-    case "DEF%": acc.def_pct += v; break;
-    default: break;
+    case "Energy Recharge%":
+      acc.er += v;
+      break;
+    case "CRIT Rate%":
+      acc.cr += v;
+      break;
+    case "CRIT DMG%":
+      acc.cd += v;
+      break;
+    case "Elemental Mastery":
+      acc.em += v;
+      break;
+    case "HP%":
+      acc.hp_pct += v;
+      break;
+    case "ATK%":
+      acc.atk_pct += v;
+      break;
+    case "DEF%":
+      acc.def_pct += v;
+      break;
+    default:
+      break;
   }
 }
 function calcTotalsFromArtifacts(arts: ArtifactSummary[]): Totals {
-  const acc: Totals = { er: 0, cr: 0, cd: 0, em: 0, hp_pct: 0, atk_pct: 0, def_pct: 0 };
+  const acc: Totals = {
+    er: 0,
+    cr: 0,
+    cd: 0,
+    em: 0,
+    hp_pct: 0,
+    atk_pct: 0,
+    def_pct: 0,
+  };
   for (const a of arts) {
     if (a.main) parseLineToTotal(a.main, acc);
     for (const s of a.subs) parseLineToTotal(s, acc);
@@ -230,12 +253,12 @@ function calcTotalsFromArtifacts(arts: ArtifactSummary[]): Totals {
 }
 
 /* ---------- GI mappers ---------- */
-function mapGiEquip(e: GiEquip): ArtifactSummary {
-  const flat = e.flat ?? {};
-  const slotRaw = flat.equipType;
+function mapGiEquip(e: any): ArtifactSummary {
+  const flat = (e?.flat ?? {}) as any;
+  const slotRaw = flat.equipType as string | undefined;
   const slot: GiPiece =
-    slotRaw && (GI_SLOT_MAP as Record<string, GiPiece>)[slotRaw as string]
-      ? (GI_SLOT_MAP as Record<string, GiPiece>)[slotRaw as string]
+    slotRaw && (GI_SLOT_MAP as Record<string, GiPiece>)[slotRaw]
+      ? (GI_SLOT_MAP as Record<string, GiPiece>)[slotRaw]
       : "Unknown";
 
   const main = flat.reliquaryMainstat
@@ -247,7 +270,7 @@ function mapGiEquip(e: GiEquip): ArtifactSummary {
     ? formatProp(flat.weaponStats[0].appendPropId, flat.weaponStats[0].statValue)
     : "";
 
-  const subs: string[] = (flat.reliquarySubstats ?? []).map((s) =>
+  const subs: string[] = (flat.reliquarySubstats ?? []).map((s: any) =>
     formatProp(s.appendPropId || s.statType, s.statValue)
   );
 
@@ -261,12 +284,12 @@ function mapGiEquip(e: GiEquip): ArtifactSummary {
     set: setGuess || undefined,
     main,
     subs,
-    level: e.reliquary?.level ?? e.weapon?.level ?? undefined,
+    level: e?.reliquary?.level ?? e?.weapon?.level ?? undefined,
     icon: safeStr(flat.icon) || undefined,
   };
 }
 
-function mapGiShownTotals(c: GiCharacter): TotalsShown {
+function mapGiShownTotals(c: any): TotalsShown {
   const fp = c.fightPropMap || {};
   const get = (k: string): number | undefined => {
     const v = fp[k];
@@ -291,17 +314,25 @@ function mapGiShownTotals(c: GiCharacter): TotalsShown {
   };
 }
 
-function mapGiCharacter(c: GiCharacter): GiDetail {
+function mapGiCharacter(c: any): GiDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
-  const name = giName(id, c.name ?? c.avatarName); // << ใช้ชื่อจริงจากไฟล์ json
+  const name = giName(id, c.name ?? c.avatarName);
   const level = c.propMap?.["4001"]?.val ?? c.level ?? c.avatarLevel ?? 1;
 
-  const equips: GiEquip[] = Array.isArray(c.equipList) ? c.equipList : [];
+  const equips: any[] = Array.isArray(c.equipList) ? c.equipList : [];
   const mapped: ArtifactSummary[] = equips
     .map((eq) => mapGiEquip(eq))
     .filter((x) => x.piece !== "Unknown")
     .sort((a, b) => {
-      const order: GiPiece[] = ["Weapon", "Flower", "Plume", "Sands", "Goblet", "Circlet", "Unknown"];
+      const order: GiPiece[] = [
+        "Weapon",
+        "Flower",
+        "Plume",
+        "Sands",
+        "Goblet",
+        "Circlet",
+        "Unknown",
+      ];
       return order.indexOf(a.piece) - order.indexOf(b.piece);
     });
 
@@ -312,12 +343,16 @@ function mapGiCharacter(c: GiCharacter): GiDetail {
 }
 
 /* ---------- HSR mappers ---------- */
-function mapHsrRelic(r: HsrRelic): RelicSummary {
+function mapHsrRelic(r: any): RelicSummary {
   const flat = r.flat ?? {};
   const main = flat.relicMainstat
-    ? `${prettyProp(flat.relicMainstat.type)}: ${flat.relicMainstat.value ?? ""}`
+    ? `${prettyProp(flat.relicMainstat.type)}: ${
+        flat.relicMainstat.value ?? ""
+      }`
     : "";
-  const subs: string[] = (flat.relicSubstats ?? []).map((s) => `${prettyProp(s.type)}: ${s.value ?? ""}`);
+  const subs: string[] = (flat.relicSubstats ?? []).map(
+    (s: any) => `${prettyProp(s.type)}: ${s.value ?? ""}`
+  );
   return {
     piece: safeStr(flat.relicType),
     name: safeStr(flat.name),
@@ -328,48 +363,98 @@ function mapHsrRelic(r: HsrRelic): RelicSummary {
     icon: safeStr(flat.icon) || undefined,
   };
 }
-function mapHsrCharacter(c: HsrCharacter): HsrDetail {
+function mapHsrCharacter(c: any): HsrDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
-  const name = giName(id, c.name ?? c.avatarName); // fallback จาก json เหมือนกัน
+  const name = giName(id, c.name ?? c.avatarName); // ใช้ fallback map เดียวกัน
   const level = c.level ?? 1;
-  const relics: RelicSummary[] = (c.relics ?? []).map((r) => mapHsrRelic(r));
+  const relics: RelicSummary[] = (c.relics ?? []).map((r: any) => mapHsrRelic(r));
   return { id, name, level, relics, shownTotals: c.fightPropMap || {} };
 }
 
 /* ---------- Route ---------- */
 export async function POST(req: NextRequest) {
   try {
-    const { game = "gi", uid } = (await req.json().catch(() => ({}))) as { game?: GameKey; uid?: string };
-    if (!uid) return NextResponse.json({ ok: false, error: "missing_uid" }, { status: 400 });
+    const { game = "gi", uid } = (await req
+      .json()
+      .catch(() => ({}))) as { game?: GameKey; uid?: string };
+    if (!uid)
+      return NextResponse.json(
+        { ok: false, error: "missing_uid" },
+        { status: 400 }
+      );
 
-    const base = game === "hsr" ? "https://enka.network/api/hsr/uid/" : "https://enka.network/api/uid/";
+    const base =
+      game === "hsr"
+        ? "https://enka.network/api/hsr/uid/"
+        : "https://enka.network/api/uid/";
     const url = base + encodeURIComponent(uid);
 
-    const r = await fetch(url, { headers: { "User-Agent": "Chatbot/1.0" }, cache: "no-store" });
-    if (!r.ok) return NextResponse.json({ ok: false, error: "fetch_failed", status: r.status }, { status: 502 });
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Chatbot/1.0" },
+      cache: "no-store",
+    });
+    if (!r.ok)
+      return NextResponse.json(
+        { ok: false, error: "fetch_failed", status: r.status },
+        { status: 502 }
+      );
 
     if (game === "gi") {
-      const j = (await r.json()) as GiTop;
-      const list: GiCharacter[] = j.avatarInfoList ?? [];
+      const j = (await r.json()) as any;
+      const list: any[] = j.avatarInfoList ?? [];
       if (!Array.isArray(list) || list.length === 0) {
-        return NextResponse.json({ ok: false, error: "no_public_characters" }, { status: 404 });
+        return NextResponse.json(
+          { ok: false, error: "no_public_characters" },
+          { status: 404 }
+        );
       }
       const detailsArr = list.map(mapGiCharacter);
-      const characters: CharacterLite[] = detailsArr.map((d) => ({ id: d.id, name: d.name, level: d.level }));
-      const player = j.playerInfo?.nickname ?? j.owner?.nickname ?? j.player?.nickname ?? "";
-      const details = Object.fromEntries(detailsArr.map((d) => [String(d.id), d]));
-      return NextResponse.json({ ok: true, game: "gi", player, uid, characters, details });
+      const characters: CharacterLite[] = detailsArr.map((d) => ({
+        id: d.id,
+        name: d.name,
+        level: d.level,
+      }));
+      const player =
+        j.playerInfo?.nickname ?? j.owner?.nickname ?? j.player?.nickname ?? "";
+      const details = Object.fromEntries(
+        detailsArr.map((d) => [String(d.id), d])
+      );
+      return NextResponse.json({
+        ok: true,
+        game: "gi",
+        player,
+        uid,
+        characters,
+        details,
+      });
     } else {
-      const j = (await r.json()) as HsrTop;
-      const list: HsrCharacter[] = j.playerDetailInfo?.avatarDetailList ?? j.avatarDetailList ?? [];
+      const j = (await r.json()) as any;
+      const list: any[] =
+        j.playerDetailInfo?.avatarDetailList ?? j.avatarDetailList ?? [];
       if (!Array.isArray(list) || list.length === 0) {
-        return NextResponse.json({ ok: false, error: "no_public_characters" }, { status: 404 });
+        return NextResponse.json(
+          { ok: false, error: "no_public_characters" },
+          { status: 404 }
+        );
       }
       const detailsArr = list.map(mapHsrCharacter);
-      const characters: CharacterLite[] = detailsArr.map((d) => ({ id: d.id, name: d.name, level: d.level }));
+      const characters: CharacterLite[] = detailsArr.map((d) => ({
+        id: d.id,
+        name: d.name,
+        level: d.level,
+      }));
       const player = j.playerDetailInfo?.nickname ?? j.owner?.nickname ?? "";
-      const details = Object.fromEntries(detailsArr.map((d) => [String(d.id), d]));
-      return NextResponse.json({ ok: true, game: "hsr", player, uid, characters, details });
+      const details = Object.fromEntries(
+        detailsArr.map((d) => [String(d.id), d])
+      );
+      return NextResponse.json({
+        ok: true,
+        game: "hsr",
+        player,
+        uid,
+        characters,
+        details,
+      });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
