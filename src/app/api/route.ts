@@ -1,3 +1,4 @@
+// src/app/api/route.ts
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
 
@@ -46,6 +47,9 @@ type Session = {
 
   lastAdviceError?: string | null;
   busy?: boolean;
+
+  // anti-ghost
+  lastStepAt?: number;
 };
 
 /* ===================== Sessions ===================== */
@@ -190,7 +194,12 @@ function sessionsReset(s: Session) {
   s.enka = undefined;
   s.lastAdviceError = null;
   s.busy = false;
+  s.lastStepAt = undefined; // anti-ghost: clear step timestamp
 }
+
+/* ===== anti-ghost helpers ===== */
+const STEP_DEBOUNCE_MS = 1200; // 1.2s กันกดซ้ำเร็ว ๆ
+const now = () => Date.now();
 
 /* ===================== Route ===================== */
 export async function POST(req: Request) {
@@ -204,6 +213,7 @@ export async function POST(req: Request) {
   const key = clientKey(req, username, sessionId);
   const s = getSession(key);
 
+  // กันยิงคำสั่งคั่นกลางระหว่างกำลังประมวลผล
   if (s.busy) {
     return NextResponse.json({
       reply: "กำลังประมวลผลอยู่นะคะ ⌛ รอสักครู่ก่อนน้า",
@@ -211,8 +221,23 @@ export async function POST(req: Request) {
     });
   }
 
+  // ---- anti-ghost early guard ----
   const intentNow = detectIntent(text);
   if (s.state !== "idle" && intentNow && intentNow !== "cancel") {
+    // ถ้าเพิ่งเข้า step นี้ไม่นาน ให้เบรกก่อน (ป้องกันปุ่มยิงรัว)
+    if (!s.lastStepAt || now() - s.lastStepAt < STEP_DEBOUNCE_MS) {
+      const step =
+        s.state === "waiting_enka_uid" ? "ขอ UID" :
+        s.state === "waiting_pick_character" ? "เลือกตัวละคร" :
+        s.state === "picked_character" ? "วิเคราะห์สเตต" :
+        s.state === "waiting_gi" || s.state === "waiting_hsr" ? "เลือกแพ็ก" :
+        s.state === "confirm_order" ? "ยืนยันคำสั่งซื้อ" : "ดำเนินการ";
+      return NextResponse.json({
+        reply: `ตอนนี้อยู่ขั้นตอน “${step}” อยู่นะคะ ⌛ ขอให้นีโนะทำให้เสร็จก่อนน้า หากจะเริ่มใหม่พิมพ์ “ยกเลิก” ได้ค่ะ`,
+        quickReplies: ["ยกเลิก"],
+      });
+    }
+    // แม้พ้น debounce แล้ว ก็ยังกันเปลี่ยน flow กลางทาง (ยกเว้นยกเลิก)
     const step =
       s.state === "waiting_enka_uid" ? "ขอ UID" :
       s.state === "waiting_pick_character" ? "เลือกตัวละคร" :
@@ -246,6 +271,7 @@ export async function POST(req: Request) {
       const game: GameKey = intent === "gi_topup" ? "gi" : "hsr";
       const list = await fetchProducts(game);
       s.state = game === "gi" ? "waiting_gi" : "waiting_hsr";
+      s.lastStepAt = now(); // anti-ghost
       s.game = game;
       s.productList = list;
       const head = game === "gi" ? "Genshin Impact" : "Honkai: Star Rail";
@@ -261,12 +287,14 @@ ${renderProductList(list)}
     }
     if (intent === "artifact_uid" || intent === "relic_uid") {
       s.state = "waiting_enka_uid";
+      s.lastStepAt = now(); // anti-ghost
       s.enka = { game: intent === "artifact_uid" ? "gi" : "hsr" };
       return NextResponse.json({
         reply: `กรุณาพิมพ์ UID ${s.enka.game === "gi" ? "Genshin" : "Star Rail"} ของคุณ (ตัวเลขเท่านั้น)`,
         ...onlyCancel(),
       });
     }
+    // help / unknown
     return NextResponse.json(mainMenu());
   }
 
@@ -279,7 +307,9 @@ ${renderProductList(list)}
     }
     const game: GameKey = s.state === "waiting_gi" ? "gi" : "hsr";
     const list =
-      s.productList && s.productList.length > 0 ? s.productList : await fetchProducts(game);
+      s.productList && s.productList.length > 0
+        ? s.productList
+        : await fetchProducts(game);
 
     let idx: number | null = pickIndexFromMessage(text, list.length);
     if (idx == null) {
@@ -312,9 +342,13 @@ ${renderProductList(list)}
     s.selectedPrice = Number(p.price);
     s.game = game;
     s.state = game === "gi" ? "waiting_uid_gi" : "waiting_uid_hsr";
+    s.lastStepAt = now(); // anti-ghost
     s.productList = undefined;
 
-    return NextResponse.json({ reply: "กรุณาพิมพ์ UID ของคุณ (ตัวเลขเท่านั้น)", ...onlyCancel() });
+    return NextResponse.json({
+      reply: "กรุณาพิมพ์ UID ของคุณ (ตัวเลขเท่านั้น)",
+      ...onlyCancel(),
+    });
   }
 
   /* ---------- Waiting UID (Topup) ---------- */
@@ -326,7 +360,10 @@ ${renderProductList(list)}
     }
     const uidOnly = toArabic(text).replace(/\D/g, "");
     if (!uidOnly) {
-      return NextResponse.json({ reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ", ...onlyCancel() });
+      return NextResponse.json({
+        reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ",
+        ...onlyCancel(),
+      });
     }
     s.uid = uidOnly;
 
@@ -337,6 +374,7 @@ ${renderProductList(list)}
     const amount = parseAmountToReceive(game, pkg);
 
     s.state = "confirm_order";
+    s.lastStepAt = now(); // anti-ghost
 
     const reply =
 `สรุปรายการสั่งซื้อ (รอยืนยัน)
@@ -347,7 +385,10 @@ UID: ${uidOnly}
 ราคา: ${price.toFixed(2)} บาท
 
 กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก`;
-    return NextResponse.json({ reply, quickReplies: ["ยืนยัน", "ยกเลิก"] });
+    return NextResponse.json({
+      reply,
+      quickReplies: ["ยืนยัน", "ยกเลิก"],
+    });
   }
 
   /* ---------- Confirm order ---------- */
@@ -366,14 +407,21 @@ UID: ${uidOnly}
 UID: ${uid}
 
 กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ`;
-      return NextResponse.json({ reply, quickReplies: [], paymentRequest: { showQR: true } });
+      return NextResponse.json({
+        reply,
+        quickReplies: [],
+        paymentRequest: { showQR: true },
+      });
     }
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
       return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
     }
-    return NextResponse.json({ reply: "กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก", quickReplies: ["ยืนยัน", "ยกเลิก"] });
+    return NextResponse.json({
+      reply: "กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก",
+      quickReplies: ["ยืนยัน", "ยกเลิก"],
+    });
   }
 
   /* ---------- Artifact/Relic (ผ่าน UID Enka เท่านั้น) ---------- */
@@ -404,6 +452,7 @@ UID: ${uid}
 
       if (!j?.ok) {
         s.state = "idle";
+        s.lastStepAt = now();
         const menu = mainMenu();
         return NextResponse.json({
           reply: "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
@@ -411,6 +460,7 @@ UID: ${uid}
         });
       }
       s.state = "waiting_pick_character";
+      s.lastStepAt = now();
       s.enka.player = j.player as string;
       s.enka.characters = j.characters as { id: number; name: string; level: number }[];
       s.enka.details = j.details as Record<string, any>;
@@ -425,6 +475,7 @@ UID: ${uid}
       });
     } catch {
       s.state = "idle";
+      s.lastStepAt = now();
       const menu = mainMenu();
       return NextResponse.json({ reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ", quickReplies: menu.quickReplies });
     } finally {
@@ -444,17 +495,19 @@ UID: ${uid}
 
     const idMatch = text.match(/#?(\d{5,})/);
     let target: { id: number; name: string; level: number } | null = null;
+
     if (idMatch) {
       const pickId = Number(idMatch[1]);
       target = chars.find((c) => c.id === pickId) || null;
     }
     if (!target) {
       const want = normName(text);
-      target = chars.find((c) => {
-        const a = normName(c.name || "");
-        const b = normName(details[String(c.id)]?.name || "");
-        return a === want || b === want || want.includes(a) || want.includes(b);
-      }) || null;
+      target =
+        chars.find((c) => {
+          const a = normName(c.name || "");
+          const b = normName(details[String(c.id)]?.name || "");
+          return a === want || b === want || want.includes(a) || want.includes(b);
+        }) || null;
     }
 
     if (!target) {
@@ -467,13 +520,19 @@ UID: ${uid}
 
     const d = details[String(target.id)] as {
       name?: string;
-      artifacts?: Array<{ piece: string; name: string; set?: string; main: string; subs: string[]; level?: number; icon?: string }>;
-      totalsFromGear?: { er: number; cr: number; cd: number; em: number; hp_pct: number; atk_pct: number; def_pct: number; };
-      shownTotals?: { hp?: number; atk?: number; def?: number; em?: number; er?: number; cr?: number; cd?: number;
-        pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number; };
+      artifacts?: Array<{
+        piece: string; name: string; set?: string; main: string; subs: string[]; level?: number; icon?: string;
+      }>;
+      totalsFromGear?: {
+        er: number; cr: number; cd: number; em: number; hp_pct: number; atk_pct: number; def_pct: number;
+      };
+      shownTotals?: {
+        hp?: number; atk?: number; def?: number; em?: number; er?: number; cr?: number; cd?: number;
+        pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number;
+      };
     };
 
-    // ดึงชุดจาก DB
+    // แนะนำเซ็ตจาก DB
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -496,7 +555,7 @@ UID: ${uid}
       setRows = [];
     }
 
-    // ฟอร์แมตรายการ (อาวุธ: ตัดรูป)
+    // ฟอร์แมตรายการ (อาวุธ: ตัดรูป, ขึ้น Main/ subs)
     function fmtMainLabel(s?: string) {
       if (!s) return "";
       return s.replace(/^([^:]+):\s*/, (_m, stat) => `Main ${stat}: `);
@@ -504,7 +563,6 @@ UID: ${uid}
     function fmtSubsList(subs?: string[]) {
       return subs && subs.length ? ` | subs ${subs.join(", ")}` : "";
     }
-
     const gearLines =
       (d?.artifacts || [])
         .map((a) => {
@@ -525,6 +583,7 @@ UID: ${uid}
     const ask = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
 
     s.state = "picked_character";
+    s.lastStepAt = now(); // anti-ghost
     s.enka = s.enka || {};
     s.enka.selectedId = target.id;
 
@@ -534,7 +593,7 @@ UID: ${uid}
     });
   }
 
-  /* ---------- วิเคราะห์ ---------- */
+  /* ---------- วิเคราะห์หลังเลือกตัวละคร ---------- */
   if (s.state === "picked_character") {
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
@@ -556,11 +615,17 @@ UID: ${uid}
     if (!d) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ไม่พบข้อมูลตัวละครสำหรับวิเคราะห์ค่ะ ลองเริ่มใหม่อีกครั้งนะคะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ไม่พบข้อมูลตัวละครสำหรับวิเคราะห์ค่ะ ลองเริ่มใหม่อีกครั้งนะคะ",
+        quickReplies: menu.quickReplies,
+      });
     }
 
     if (game !== "gi") {
-      return NextResponse.json({ reply: "ตอนนี้โหมดวิเคราะห์อัตโนมัติรองรับ Genshin ก่อนนะคะ (HSR จะตามมาเร็ว ๆ นี้)", quickReplies: ["ยกเลิก"] });
+      return NextResponse.json({
+        reply: "ตอนนี้โหมดวิเคราะห์อัตโนมัติรองรับ Genshin ก่อนนะคะ (HSR จะตามมาเร็ว ๆ นี้)",
+        quickReplies: ["ยกเลิก"],
+      });
     }
 
     try {
@@ -590,7 +655,8 @@ UID: ${uid}
       }
 
       const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
-      const reason = s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : "";
+      const reason =
+        s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : "";
       return NextResponse.json({
         reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}${reason}`,
         quickReplies: ["ยกเลิก"],
@@ -618,9 +684,11 @@ UID: ${uid}
   });
 }
 
-/* ===== helper fallback ===== */
+/* ===== helper fallback แบบเบา ๆ ===== */
 function simpleFallbackAdvice(
-  totals?: { er?: number; cr?: number; cd?: number; em?: number; hp_pct?: number; atk_pct?: number; def_pct?: number; },
+  totals?: {
+    er?: number; cr?: number; cd?: number; em?: number; hp_pct?: number; atk_pct?: number; def_pct?: number;
+  },
   shown?: { er?: number; cr?: number; cd?: number }
 ): string {
   const cr = totals?.cr ?? (shown?.cr != null ? shown.cr * 100 : 0);
@@ -629,6 +697,7 @@ function simpleFallbackAdvice(
   const er = totals?.er != null ? totals.er + 100 : erShown ?? 0;
 
   const target = { cr: 70, cd: 140, er: 120 };
+
   const lack: string[] = [];
   if (cr < target.cr) lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
   if (cd < target.cd) lack.push(`CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`);
