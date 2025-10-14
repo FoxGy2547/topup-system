@@ -43,8 +43,12 @@ type Session = {
     details?: Record<string, any>;
     selectedId?: number;
   };
-  // เก็บ error ล่าสุดจาก gi-advice
+
+  // วิเคราะห์
   lastAdviceError?: string | null;
+
+  // กันกดซ้ำ/ยิงซ้อน
+  busy?: boolean;
 };
 
 /* ===================== Sessions ===================== */
@@ -210,6 +214,7 @@ function sessionsReset(s: Session) {
   s.productList = undefined;
   s.enka = undefined;
   s.lastAdviceError = null;
+  s.busy = false;
 }
 
 /* ===================== Route ===================== */
@@ -225,6 +230,35 @@ export async function POST(req: Request) {
   const text: string = (message || "").toString();
   const key = clientKey(req, username, sessionId);
   const s = getSession(key);
+
+  /* ---------- ถ้ากำลัง busy อยู่ ให้บอกก่อน ---------- */
+  if (s.busy) {
+    return NextResponse.json({
+      reply: "กำลังประมวลผลอยู่นะคะ ⌛ รอสักครู่น้า",
+      quickReplies: ["ยกเลิก"],
+    });
+  }
+
+  /* ---------- Guard: กันสลับ intent กลางคัน ---------- */
+  const intentNow = detectIntent(text);
+  if (s.state !== "idle" && intentNow && intentNow !== "cancel") {
+    const step =
+      s.state === "waiting_enka_uid"
+        ? "ขอ UID"
+        : s.state === "waiting_pick_character"
+        ? "เลือกตัวละคร"
+        : s.state === "picked_character"
+        ? "วิเคราะห์สเตต"
+        : s.state === "waiting_gi" || s.state === "waiting_hsr"
+        ? "เลือกแพ็ก"
+        : s.state === "confirm_order"
+        ? "ยืนยันคำสั่งซื้อ"
+        : "ดำเนินการ";
+    return NextResponse.json({
+      reply: `ตอนนี้อยู่ขั้นตอน “${step}” อยู่นะคะ ถ้าจะเริ่มใหม่พิมพ์ “ยกเลิก” ก่อนค่ะ`,
+      quickReplies: ["ยกเลิก"],
+    });
+  }
 
   /* ---------- Global reset ---------- */
   if (text && RE_RESET.test(text)) {
@@ -353,10 +387,10 @@ ${renderProductList(list)}
     const game: GameKey = s.state === "waiting_uid_gi" ? "gi" : "hsr";
     const gameName = game === "gi" ? "Genshin Impact" : "Honkai: Star Rail";
     const pkg = s.selectedName || "-";
-    const price = s.selectedPrice ?? 0;
-    const amount = parseAmountToReceive(game, pkg);
-
     s.state = "confirm_order";
+
+    const amount = parseAmountToReceive(game, pkg);
+    const price = s.selectedPrice ?? 0;
 
     const reply = `สรุปรายการสั่งซื้อ (รอยืนยัน)
 เกม: ${gameName}
@@ -429,8 +463,13 @@ UID: ${uid}
 
     const game = s.enka.game || "gi";
     try {
+      s.busy = true; // lock ขณะดึงข้อมูล
       const base = new URL(req.url).origin;
       const enkaUrl = `${base}/api/enka`;
+
+      // ให้ฝั่ง UI แสดงสถานะ
+      // (ถ้าฝั่ง UI รองรับข้อความเดียว เราจะใส่บรรทัดสถานะไว้ในผลลัพธ์ถัดไปด้วย)
+      // ตรงนี้ส่งต่อเลย ไม่รอข้อความกลาง
 
       const r = await fetch(enkaUrl, {
         method: "POST",
@@ -467,8 +506,7 @@ UID: ${uid}
         });
 
       return NextResponse.json({
-        reply: `พบตัวละครของ ${j.player} (UID: ${uid})
-เลือกตัวที่อยากดูของได้เลย:`,
+        reply: `⌛ กำลังดึงข้อมูลจาก Enka… สำเร็จแล้ว!\nพบตัวละครของ ${j.player} (UID: ${uid})\nเลือกตัวที่อยากดูของได้เลย:`,
         quickReplies: [...chips, "ยกเลิก"],
       });
     } catch {
@@ -478,6 +516,8 @@ UID: ${uid}
         reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ",
         quickReplies: menu.quickReplies,
       });
+    } finally {
+      s.busy = false;
     }
   }
 
@@ -661,6 +701,7 @@ UID: ${uid}
     }
 
     try {
+      s.busy = true; // lock ตอนยิงไปหา Gemini
       const base = new URL(req.url).origin;
       const r = await fetch(`${base}/api/gi-advice`, {
         method: "POST",
@@ -699,6 +740,8 @@ UID: ${uid}
         reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})`,
         quickReplies: ["ยกเลิก"],
       });
+    } finally {
+      s.busy = false;
     }
   }
 
@@ -734,8 +777,21 @@ function simpleFallbackAdvice(
   const target = { cr: 70, cd: 140, er: 120 };
 
   const lack: string[] = [];
-  if (cr < target.cr) lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
-  if (cd < target.cd) lack.push(`CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`);
-  if (er < target.er) lack.push(`ER ต่ำ (รวม ~${er.toFixed(0)}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`);
-  return lack.length ? lack.join("\n") : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
+  if (cr < target.cr)
+    lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
+  if (cd < target.cd)
+    lack.push(
+      `CD ต่ำ (ปัจจุบัน ~${cd.toFixed(
+        0
+      )}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`
+    );
+  if (er < target.er)
+    lack.push(
+      `ER ต่ำ (รวม ~${er.toFixed(
+        0
+      )}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`
+    );
+  return lack.length
+    ? lack.join("\n")
+    : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
 }
