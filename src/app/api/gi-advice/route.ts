@@ -12,16 +12,19 @@ type Row = {
   electro_dmg_pct?: number; anemo_dmg_pct?: number; geo_dmg_pct?: number;
   dendro_dmg_pct?: number; phys_dmg_pct?: number; physical_dmg_pct?: number;
 };
+type ElementKey = "pyro" | "hydro" | "cryo" | "electro" | "anemo" | "geo" | "dendro" | "physical";
 type StatTotals = Partial<{
   hp: number; atk: number; def: number; em: number;
   er: number; cr: number; cd: number;
-  elem_dmg: number; // goblet element dmg or general bonus (%)
+  elem_dmg: number; // goblet/ascension bonus of chosen element (%)
 }>;
 type AdvicePayload = {
   mode?: "base" | "advice";
   character?: string;
-  stats?: StatTotals; // current totals from player (optional)
-  role?: string;      // optional hint: "burst dps" | "onfield dps" | "quick swap" | "reaction" | "healer" | "shield"
+  role?: string;
+  element?: ElementKey; // optional explicit element for elem_dmg merge
+  stats?: StatTotals;   // user-supplied stats (usually from artifacts/weapon/total)
+  statsAreTotals?: boolean; // if true, don't add base again
   gear?: Record<string, { set?: string; main?: string; subs?: string[] }>; // optional artifact snapshot
 };
 
@@ -80,27 +83,32 @@ function rowToBase(row: Row) {
     },
   };
 }
+function detectElementFromBase(base: ReturnType<typeof rowToBase>): ElementKey | null {
+  const entries = Object.entries(base.elem) as [ElementKey, number][];
+  let best: ElementKey | null = null;
+  let bestVal = 0;
+  for (const [k, v] of entries) {
+    if ((v ?? 0) > bestVal) { bestVal = v ?? 0; best = k; }
+  }
+  return bestVal > 0 ? best : null;
+}
 
 /* ---------- Practical target model (rule-based) ---------- */
-// minimal per-character overrides (feel free to add more later)
 const OVERRIDES: Record<string, Partial<StatTotals> & { er?: number; cr?: number; cd?: number }> = {
-  // Off-field burst supports need high ER
   "xiangling": { er: 180, cr: 70, cd: 140 },
   "bennett":   { er: 180, cr: 60, cd: 120 },
   "xingqiu":   { er: 220, cr: 60, cd: 120 },
   "raidenshogun": { er: 220, cr: 65, cd: 130 },
   "furina": { er: 130, cr: 70, cd: 140 },
   "yelan": { er: 220, cr: 60, cd: 120 },
-  "neuvillette": { er: 110, cr: 65, cd: 140, em: 0 }, // drives crit, DMG% goblet
+  "neuvillette": { er: 110, cr: 65, cd: 140 },
   "nahida": { er: 120, em: 800, cr: 60, cd: 120 },
   "kazuha": { er: 140, em: 800, cr: 0, cd: 0 },
 };
 function toKey(s = "") { return s.toLowerCase().replace(/\s+/g, ""); }
-
 function targetsFor(character: string, role?: string): Required<Pick<StatTotals, "er" | "cr" | "cd">> & StatTotals {
   const key = toKey(character);
   const base: Required<Pick<StatTotals, "er" | "cr" | "cd">> & StatTotals = {
-    // generic defaults
     er: role?.toLowerCase().includes("burst") || role?.toLowerCase().includes("off")
       ? 160 : 130,
     cr: 70,
@@ -109,14 +117,11 @@ function targetsFor(character: string, role?: string): Required<Pick<StatTotals,
   const o = OVERRIDES[key];
   return { ...base, ...(o ?? {}) };
 }
-
 function gap(current: number | undefined, target: number | undefined) {
   if (current == null || target == null) return null;
-  const delta = +(current - target).toFixed(1);
-  return { target, current, diff: +(-delta).toFixed(1), // positive = need more
-           status: delta >= 0 ? "ok" : "need" };
+  const need = +(target - current).toFixed(1);
+  return { target, current, diff: need, status: need <= 0 ? "ok" : "need" };
 }
-
 function buildGapReport(character: string, stats?: StatTotals, role?: string) {
   const tg = targetsFor(character, role);
   const report: Record<string, any> = {};
@@ -125,15 +130,29 @@ function buildGapReport(character: string, stats?: StatTotals, role?: string) {
   report.cd   = gap(stats?.cd, tg.cd);
   if (tg.em)  report.em  = gap(stats?.em, tg.em);
   if (tg.elem_dmg) report.elem_dmg = gap(stats?.elem_dmg, tg.elem_dmg);
-  // add simple crit-ratio hint if both present
   if (stats?.cr != null && stats?.cd != null) {
     const idealCd = +(stats.cr * 2).toFixed(1);
-    report.crit_ratio = {
-      ideal_cd_for_cr: idealCd,
-      ratio_ok: stats.cd >= idealCd - 10 && stats.cd <= idealCd + 30,
-    };
+    report.crit_ratio = { ideal_cd_for_cr: idealCd, ratio_ok: stats.cd >= idealCd - 10 && stats.cd <= idealCd + 30 };
   }
   return { targets: tg, gaps: report };
+}
+
+/* ---------- Merge user stats with base ---------- */
+function mergeWithBase(user: StatTotals | undefined, base: ReturnType<typeof rowToBase> | null, element?: ElementKey, statsAreTotals?: boolean): StatTotals {
+  const u = user || {};
+  if (!base || statsAreTotals) return { ...u }; // assume user already provided totals
+  const usedElem = element || detectElementFromBase(base) || undefined;
+  const elemBonus = usedElem ? base.elem[usedElem] : 0;
+  return {
+    hp: (u.hp ?? 0) + (base.hp ?? 0),
+    atk: (u.atk ?? 0) + (base.atk ?? 0),
+    def: (u.def ?? 0) + (base.def ?? 0),
+    em: (u.em ?? 0) + (base.em ?? 0),
+    er: (u.er ?? 0) + (base.er ?? 0),
+    cr: (u.cr ?? 0) + (base.cr ?? 0),
+    cd: (u.cd ?? 0) + (base.cd ?? 0),
+    elem_dmg: (u.elem_dmg ?? 0) + (elemBonus ?? 0),
+  };
 }
 
 /* ---------- Gemini helpers ---------- */
@@ -144,15 +163,16 @@ function gearToLines(gear: Record<string, any>) {
   }
   return lines.join("\n");
 }
-function makePrompt(character: string, role: string | undefined, gear: Record<string, any>, stats: StatTotals | undefined, targets: any, gaps: any) {
+function makePrompt(character: string, role: string | undefined, gear: Record<string, any>, totals: StatTotals, targets: any, gaps: any, element?: ElementKey) {
   return [
-    `คุณเป็นผู้เชี่ยวชาญ Genshin Impact ช่วยวิเคราะห์อาร์ติแฟกต์และสเตตของ “${character}” เป็นภาษาไทยแบบกระชับ อ่านง่าย`,
+    `คุณเป็นผู้เชี่ยวชาญ Genshin Impact ช่วยวิเคราะห์ให้ “${character}” เป็นภาษาไทยแบบกระชับ อ่านง่าย`,
     role ? `บทบาท/สไตล์ที่ผู้ใช้ระบุ: ${role}` : ``,
-    `สเตตปัจจุบัน (ถ้ามี): ${JSON.stringify(stats ?? {})}`,
+    element ? `ธาตุที่ใช้ในการคำนวณ DMG%: ${element}` : ``,
+    `ค่าสรุปรวมหลังบวก Base Lv90: ${JSON.stringify(totals)}`,
     `เป้าหมายโดยประมาณ: ${JSON.stringify(targets)}`,
     `ส่วนต่างที่ยังขาด/เกิน: ${JSON.stringify(gaps)}`,
     `ชิ้นที่มีตอนนี้:\n${gearToLines(gear)}`,
-    `ให้ตอบเป็นย่อหน้าสั้นๆ แบบธรรมดา (ไม่ต้องมาร์กดาวน์) และลงท้ายด้วย bullet ประมาณ 3 ข้อเป็นเช็คลิสต์สิ่งที่ควรทำก่อน เช่น เปลี่ยน main-stat, ปรับ ER, หา CR/CD เพิ่ม ฯลฯ`,
+    `ช่วยบอกว่าอะไร "ขาด" หรือ "เกิน" พร้อมข้อเสนอแนะที่ทำได้จริง (เปลี่ยน main-stat, เป้า ER, อัตราคริติคัล) และสรุปเป็นเช็คลิสต์ 3 ข้อท้ายข้อความ`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -192,26 +212,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, base: rowToBase(row) });
     }
 
-    // 2) advice with practical targets + Gemini gap analysis
+    // 2) advice with merged totals + targets + Gemini
     const character = String(body.character || "ตัวละคร").trim();
     const role = typeof body.role === "string" ? body.role : undefined;
-    const stats = body.stats || {};
+    const element = body.element;
+    const userStats = body.stats || {};
     const gear = body.gear || {};
+    const statsAreTotals = !!body.statsAreTotals;
 
-    // compute targets + gaps (rule-based first)
-    const { targets, gaps } = buildGapReport(character, stats, role);
-
-    // enrich prompt w/ db base if available
-    let baseDb: any = null;
+    // base from DB
     const row = await findBaseRow(character);
-    if (row) baseDb = rowToBase(row);
+    const base = row ? rowToBase(row) : null;
 
-    const prompt = makePrompt(character, role, gear, stats, targets, gaps) +
-      (baseDb ? `\n\nอ้างอิง base จาก DB: ${JSON.stringify(baseDb)}` : "");
+    // merge totals (unless user already gave totals)
+    const totals = mergeWithBase(userStats, base, element, statsAreTotals);
 
+    // compute targets + gaps against totals
+    const { targets, gaps } = buildGapReport(character, totals, role);
+
+    const prompt = makePrompt(character, role, gear, totals, targets, gaps, element);
     const text = await callGemini(prompt);
 
-    return NextResponse.json({ ok: true, character, role, targets, gaps, base: baseDb, text });
+    return NextResponse.json({ ok: true, character, role, element, totals, targets, gaps, base, usedMerge: !statsAreTotals, text });
   } catch (err: any) {
     console.error("[gi-advice] error", err);
     return NextResponse.json({ ok: false, error: String(err?.message || err) }, { status: 500 });
