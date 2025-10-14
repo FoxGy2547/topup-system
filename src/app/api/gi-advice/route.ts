@@ -1,7 +1,7 @@
 // วิเคราะห์ Artifact/Weapon ของ Genshin ด้วย Gemini
-// - รองรับรุ่น 2.5 (ดีฟอลต์) และ fallback เป็น 2.0 → 1.5 อัตโนมัติ
-// - แนบ golden ratio และ “ให้คิดรวม Base Lv.90 ของตัวละคร”
-// - ถ้ามี shownTotals ให้ถือเป็นแหล่งความจริงในการประเมิน
+// - ใช้รุ่น 2.5 (ดีฟอลต์) และ fallback → 2.0 → 1.5
+// - รวม Base Lv.90 + Ascension Bonus Stat เข้ากับของ/อาวุธก่อนตัดสิน
+// - ถ้ามี shownTotals ให้ถือเป็นความจริง (ห้ามสรุปว่าต่ำถ้าแตะเป้าแล้ว)
 import { NextRequest, NextResponse } from "next/server";
 
 /* =============== Types =============== */
@@ -39,12 +39,11 @@ function makePrompt(b: AdviceBody) {
   if ((b as any).totalsFromGear) {
     const t = (b as any).totalsFromGear as Totals;
     lines.push(
-      `สรุปรวมจากของ+อาวุธ (ยังไม่รวม Base ตัวละคร): ER ${t.er.toFixed(1)}% | CR ${t.cr.toFixed(1)}% | CD ${t.cd.toFixed(1)}% | EM ${t.em.toFixed(0)} | HP% ${t.hp_pct.toFixed(1)} | ATK% ${t.atk_pct.toFixed(1)} | DEF% ${t.def_pct.toFixed(1)}`
+      `สรุปรวมจากของ+อาวุธ (ยังไม่รวม Base/Ascension): ER ${t.er.toFixed(1)}% | CR ${t.cr.toFixed(1)}% | CD ${t.cd.toFixed(1)}% | EM ${t.em.toFixed(0)} | HP% ${t.hp_pct.toFixed(1)} | ATK% ${t.atk_pct.toFixed(1)} | DEF% ${t.def_pct.toFixed(1)}`
     );
   }
 
   if ((b as any).shownTotals) {
-    // shownTotals คือค่าสรุปจริงบนโปรไฟล์ (ถือเป็น source of truth)
     const s = (b as any).shownTotals as TotalsShown;
     const pct = (x?: number) => (typeof x === "number" ? x * 100 : undefined);
     const hp = s.hp, atk = s.atk, def = s.def, em = s.em;
@@ -60,29 +59,28 @@ function makePrompt(b: AdviceBody) {
   }
 
   lines.push("");
-  lines.push("หมายเหตุสำคัญ:");
-  lines.push("- ข้อมูลชิ้นส่วนด้านบนเป็น “ค่าสเตตจาก Artifact และ Weapon เท่านั้น” (ยังไม่รวม Base/Ascension/Talent)");
-  lines.push(`- ให้คุณดึง “ฐานสเตตของตัวละครเลเวล 90” ของ ${charName} (HP/ATK/DEF + ค่าเริ่มต้น CR 5%, CD 50%, ER 100%) จากความรู้ทั่วไปของเกม แล้ว “รวมกับค่าจาก Artifact/Weapon” เพื่อประเมินว่าแตะเป้าหมายหรือยัง`);
-  lines.push("- ถ้ามีค่า shownTotals ให้ใช้ shownTotals เป็นตัวตัดสินหลัก และห้ามสรุปว่า ‘ต่ำ’ ถ้าค่านั้นแตะเป้าหมายอยู่แล้ว");
-  lines.push("- หากไม่แน่ใจค่า base บางส่วน ให้ใช้ค่ามาตรฐานของเกม (CR=5%, CD=50%, ER=100%) และชี้แจงอย่างสั้น");
+  lines.push("เกณฑ์การคำนวณ:");
+  lines.push("- ดึง/อ้างอิง “Base Lv.90 ของตัวละคร” (HP/ATK/DEF + Base CR 5%, Base CD 50%, Base ER 100%).");
+  lines.push("- ดึง/อ้างอิง “Ascension Bonus Stat ของตัวละคร” ที่เลเวล 90 (เช่น บางตัวโตเป็น CRIT Rate หรือ CRIT DMG/HP%/EM/ER/Healing ฯลฯ) แล้ว *บวกเข้ากับ Base*.");
+  lines.push("- รวม **Base + Ascension + ค่าจาก Artifact/Weapon** เพื่อได้ CR/CD/ER/ฯลฯ สุดท้าย ก่อนเทียบกับเป้าหมาย.");
+  lines.push("- ถ้ามี `shownTotals` ให้ถือเป็นตัวเลขความจริงของหน้าตัวละคร และให้ใช้ในการตัดสินว่าถึงเป้า/เกินเป้าหรือยัง (ห้ามบอกว่าต่ำถ้าค่านั้นแตะเป้าแล้ว).");
 
   lines.push("");
-  lines.push("แนวทางสัดส่วนสมดุล (Golden Ratio/เป้าหมายพื้นฐาน):");
-  lines.push("- CR ~70–80% | CD ~130–160% | ER ~120–150% (ขึ้นกับความจำเป็นในการกดเบิร์ส)");
-  lines.push("- ถึง CR ~70% แล้วค่อยดัน CD ต่อ ถ้า CR <60% ให้เติมจากหมวก/ซับก่อน");
-  lines.push("- สำหรับตัวละครที่กดเบิร์สบ่อย ให้ความสำคัญ ER ให้ถึงเป้าก่อน แล้วค่อยบาลานซ์ CR/CD");
+  lines.push("เป้าหมาย (Golden Ratio โดยทั่วไป):");
+  lines.push("- CR ~70–80% | CD ~130–160% | ER ~120–150% (ขึ้นกับการกดเบิร์สบ่อยแค่ไหน)");
 
   return [
     `คุณเป็นผู้เชี่ยวชาญ Genshin Impact ช่วยวิเคราะห์อาร์ติแฟกต์ให้ “${charName}” เป็นภาษาไทยแบบสั้น กระชับ อ่านง่าย`,
     lines.join("\n"),
     `รูปแบบผลลัพธ์ (ข้อความธรรมดา ไม่ต้องมาร์กดาวน์):`,
-    `1) สรุปสเตตสำคัญที่ควรโฟกัส (อ้างอิง golden ratio และใช้ค่า base Lv.90 รวมกับของก่อนตัดสิน)`,
-    `2) ประเมิน main/sub รายชิ้นว่า ดี/พอใช้/ควรเปลี่ยน พร้อมเหตุผลสั้น ๆ`,
-    `3) ถ้า CR/CD/ER ยังต่ำกว่าเป้า ให้ระบุว่าขาดอะไรและควรเติมจากไหน (หมวก/ทราย/อาวุธ/ซับ) — แต่ถ้า shownTotals ถึงเป้าแล้ว ให้บอกว่าโอเคและเสนอทางปรับแต่งเสริมแทน`,
+    `A) แสดง “สรุปตัวเลขที่คำนวณได้” หลังรวม Base+Ascension+ของ: CR/CD/ER (และถ้ามี shownTotals ให้แสดงควบคู่แล้วระบุว่าตัดสินตาม shownTotals)`,
+    `B) สรุปสเตตสำคัญที่ควรโฟกัส (อ้างอิง golden ratio) — ห้ามบอกว่าต่ำถ้า shownTotals หรือผลรวม ≥ เป้า`,
+    `C) ประเมิน main/sub รายชิ้นแบบย่อ (ดี/พอใช้/ควรเปลี่ยน + เหตุผลสั้น ๆ)`,
+    `D) คำแนะนำเชิงปฏิบัติ (เช่น เพิ่ม CR จากหมวก/ซับ, ลด ER ถ้าเกิน ฯลฯ)`,
   ].join("\n\n");
 }
 
-/* =============== Gemini Caller (with 2.5 → 2.0 → 1.5 fallback) =============== */
+/* =============== Gemini Caller (2.5 → 2.0 → 1.5) =============== */
 const PREFERRED_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash"];
 

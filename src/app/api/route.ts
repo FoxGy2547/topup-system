@@ -473,7 +473,7 @@ UID: ${uid}
         pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number; };
     };
 
-    // แนะนำเซ็ตจาก DB
+    // ดึงชุดจาก DB
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -496,7 +496,7 @@ UID: ${uid}
       setRows = [];
     }
 
-    // ฟอร์แมตรายการชิ้น (ตัดรูปอาวุธออก)
+    // ฟอร์แมตรายการ (อาวุธ: ตัดรูป)
     function fmtMainLabel(s?: string) {
       if (!s) return "";
       return s.replace(/^([^:]+):\s*/, (_m, stat) => `Main ${stat}: `);
@@ -524,7 +524,6 @@ UID: ${uid}
     const recHead = `Artifact/Relic ที่ฐานข้อมูลแนะนำ:`;
     const ask = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
 
-    // เก็บ context
     s.state = "picked_character";
     s.enka = s.enka || {};
     s.enka.selectedId = target.id;
@@ -535,7 +534,7 @@ UID: ${uid}
     });
   }
 
-  /* ---------- วิเคราะห์หลังเลือกตัวละคร ---------- */
+  /* ---------- วิเคราะห์ ---------- */
   if (s.state === "picked_character") {
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
@@ -619,7 +618,7 @@ UID: ${uid}
   });
 }
 
-/* ===== helper fallback แบบเบา ๆ ===== */
+/* ===== helper fallback ===== */
 function simpleFallbackAdvice(
   totals?: { er?: number; cr?: number; cd?: number; em?: number; hp_pct?: number; atk_pct?: number; def_pct?: number; },
   shown?: { er?: number; cr?: number; cd?: number }
