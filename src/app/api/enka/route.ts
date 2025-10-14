@@ -3,8 +3,15 @@
    — ไม่มี implicit any —
 */
 import { NextRequest, NextResponse } from "next/server";
+import giMap from "@/data/gi_characters.json"; // << เพิ่ม: ใช้ map id -> ชื่อจริง
 
 type GameKey = "gi" | "hsr";
+
+/* ---------- helper: ชื่อจริงจาก json ---------- */
+function giName(id?: number, fallback?: string): string {
+  if (!id) return fallback || "";
+  return (giMap as Record<string, string>)[String(id)] || fallback || `#${id}`;
+}
 
 /* ---------- ชื่อ prop ให้อ่านง่าย (ใช้ได้ทั้ง GI/HSR) ---------- */
 const PROP_MAP: Record<string, string> = {
@@ -261,7 +268,6 @@ function mapGiEquip(e: GiEquip): ArtifactSummary {
 
 function mapGiShownTotals(c: GiCharacter): TotalsShown {
   const fp = c.fightPropMap || {};
-  // ตัวเลขบน enka เป็นค่ารวมสุดท้ายแล้ว
   const get = (k: string): number | undefined => {
     const v = fp[k];
     return typeof v === "number" ? v : undefined;
@@ -287,7 +293,7 @@ function mapGiShownTotals(c: GiCharacter): TotalsShown {
 
 function mapGiCharacter(c: GiCharacter): GiDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
-  const name = c.name ?? c.avatarName ?? `#${id || ""}`;
+  const name = giName(id, c.name ?? c.avatarName); // << ใช้ชื่อจริงจากไฟล์ json
   const level = c.propMap?.["4001"]?.val ?? c.level ?? c.avatarLevel ?? 1;
 
   const equips: GiEquip[] = Array.isArray(c.equipList) ? c.equipList : [];
@@ -324,7 +330,7 @@ function mapHsrRelic(r: HsrRelic): RelicSummary {
 }
 function mapHsrCharacter(c: HsrCharacter): HsrDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
-  const name = c.name ?? c.avatarName ?? `#${id || ""}`;
+  const name = giName(id, c.name ?? c.avatarName); // fallback จาก json เหมือนกัน
   const level = c.level ?? 1;
   const relics: RelicSummary[] = (c.relics ?? []).map((r) => mapHsrRelic(r));
   return { id, name, level, relics, shownTotals: c.fightPropMap || {} };
