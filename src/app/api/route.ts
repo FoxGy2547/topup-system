@@ -1,3 +1,4 @@
+// src/app/api/route.ts
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
 
@@ -466,30 +467,28 @@ export async function POST(req: Request) {
     s.enka.uid = uid;
 
     const game = s.enka.game || "gi";
-    // เรียก internal enka api
     try {
-        // เรียก internal enka api (ทำ URL แบบ relative จาก req.url)
-        const base = new URL(req.url).origin;              // e.g. https://your-app.vercel.app
-        const enkaUrl = `${base}/api/enka`;
+      const base = new URL(req.url).origin;
+      const enkaUrl = `${base}/api/enka`;
 
-        const r = await fetch(enkaUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ game, uid }),
-        });
-        const j = await r.json();
+      const r = await fetch(enkaUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ game, uid }),
+      });
+      const j = await r.json();
 
       if (!j?.ok) {
         s.state = "idle";
         return NextResponse.json({ reply: "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ" });
       }
       s.state = "waiting_pick_character";
-      s.enka.player = j.player;
-      s.enka.characters = j.characters;
-      s.enka.details = j.details;
+      s.enka.player = j.player as string;
+      s.enka.characters = j.characters as { id: number; name: string; level: number }[];
+      s.enka.details = j.details as Record<string, unknown>;
 
       const chips = (j.characters as { id: number; name: string; level: number }[])
-        .map((c: { id: number; name: string; level: number }) => `${c.name} (lv.${c.level})`);
+        .map((c) => `${c.name} (lv.${c.level})`);
 
       return NextResponse.json({
         reply: `พบตัวละครของ ${j.player} (UID: ${uid})\nเลือกตัวที่อยากดูของได้เลย:`,
