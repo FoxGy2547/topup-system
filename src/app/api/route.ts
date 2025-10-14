@@ -523,7 +523,7 @@ export async function POST(req: Request) {
   }
 
   /* ---------- Artifact/Relic (จาก UID enka) ---------- */
-  if (s.state === "waiting_enka_uid") {
+    if (s.state === "waiting_enka_uid") {
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       return NextResponse.json(mainMenu());
@@ -551,18 +551,19 @@ export async function POST(req: Request) {
       const j = await r.json();
 
       if (!j?.ok) {
-        s.state = "idle";
+        // ❗ เปลี่ยนจาก s.state = "idle" เป็น sessionsReset
+        sessionsReset(s);
         return NextResponse.json({
-          reply:
-            "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
+          reply: `ไม่พบข้อมูลผู้เล่น UID ${uid} ค่ะ ลองตรวจสอบว่าเปิดโปรไฟล์สาธารณะหรือพิมพ์ UID ให้ถูกต้องนะคะ`,
+          quickReplies: ["ดู Artifact Genshin (จาก UID)", "ดู Relic Star Rail (จาก UID)", "ยกเลิก"],
         });
       }
+
       s.state = "waiting_pick_character";
       s.enka.player = j.player as string;
       s.enka.characters = j.characters as { id: number; name: string; level: number }[];
       s.enka.details = j.details as Record<string, unknown>;
 
-      // ทำเป็นลิสต์มีลำดับให้พิมพ์เลขเลือก (แทนปุ่ม)
       const chars: { id: number; name: string; level: number }[] = j.characters || [];
       const lines: string[] = [];
       s.lastCharList = chars.map((c, idx) => {
@@ -577,12 +578,14 @@ export async function POST(req: Request) {
           `พบตัวละครของ ${j.player} (UID: ${uid})\n` +
           `พิมพ์หมายเลขลำดับ หรือพิมพ์ชื่อให้ตรงเพื่อเลือกตัวละคร:\n` +
           lines.join("\n"),
-        // ขั้นตอนนี้ให้มีปุ่ม "ยกเลิก" อย่างเดียว
         quickReplies: ["ยกเลิก"],
       });
     } catch {
-      s.state = "idle";
-      return NextResponse.json({ reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ" });
+      sessionsReset(s);
+      return NextResponse.json({
+        reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ ลองใหม่อีกครั้งภายหลังนะคะ",
+        quickReplies: ["ดู Artifact Genshin (จาก UID)", "ดู Relic Star Rail (จาก UID)", "ยกเลิก"],
+      });
     }
   }
 
