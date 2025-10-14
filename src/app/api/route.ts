@@ -123,20 +123,54 @@ function parseAmountToReceive(game: GameKey, productName: string): string {
 }
 
 /* ===================== Global intents ===================== */
-type Intent = "gi_topup" | "hsr_topup" | "artifact" | "relic" | "cancel" | "help" | "artifact_enka" | "relic_enka";
+type Intent =
+  | "gi_topup"
+  | "hsr_topup"
+  | "artifact_by_uid"
+  | "relic_by_uid"
+  | "artifact_by_name"
+  | "relic_by_name"
+  | "cancel"
+  | "help";
 
+/** เดิม “ดู artifact genshin / relic star rail” ไปชนโหมดจากชื่อ
+ *  เราเปลี่ยนค่าเริ่มต้นให้ไปโหมด “จาก UID” แทน
+ *  และถ้าผู้ใช้พิมพ์คำว่า “จากชื่อ” เท่านั้นจึงเข้าโหมดค้นจากชื่อ
+ */
 const GI_CHARGING = [
-  "เติม genshin impact", "เติมเกนชิน", "เติม genshin", "เติม gi", "top up genshin", "ซื้อ genesis",
-  "เพชร genshin", "เจม genshin", "คริสตัล genshin",
+  "เติม genshin impact",
+  "เติมเกนชิน",
+  "เติม genshin",
+  "เติม gi",
+  "top up genshin",
+  "ซื้อ genesis",
+  "เพชร genshin",
+  "เจม genshin",
+  "คริสตัล genshin",
 ];
 const HSR_CHARGING = [
-  "เติม honkai: star rail", "เติม hsr", "เติม star rail", "เติม honkai star rail", "top up hsr", "ซื้อ oneiric",
-  "เพชร hsr", "คริสตัล hsr", "oneiric shard",
+  "เติม honkai: star rail",
+  "เติม hsr",
+  "เติม star rail",
+  "เติม honkai star rail",
+  "top up hsr",
+  "ซื้อ oneiric",
+  "เพชร hsr",
+  "คริสตัล hsr",
+  "oneiric shard",
 ];
-const ARTIFACT_GI = ["ดู artifact genshin", "artifact ตัวไหน", "artifact ที่เหมาะกับ", "artifact genshin impact"];
-const RELIC_HSR = ["ดู relic", "relic ที่เหมาะกับ", "relic honkai", "relic star rail"];
+
+// ค่าเริ่มต้น → ไป “จาก UID”
+const ARTIFACT_GI_DEFAULT = ["ดู artifact genshin", "artifact genshin impact", "artifact ตัวไหน", "artifact ที่เหมาะกับ"];
+const RELIC_HSR_DEFAULT = ["ดู relic", "relic star rail", "relic honkai", "relic ที่เหมาะกับ"];
+
+// เฉพาะ “จาก UID” ที่ชัดเจน
 const ARTIFACT_FROM_UID = ["ดู artifact จาก uid", "artifact จาก uid", "ดู artifact genshin (จาก uid)"];
 const RELIC_FROM_UID = ["ดู relic จาก uid", "relic จาก uid", "ดู relic star rail (จาก uid)"];
+
+// โหมด “จากชื่อ” ต้องมีคำว่า “จากชื่อ”
+const ARTIFACT_BY_NAME = ["ดู artifact (จากชื่อ)", "artifact จากชื่อ", "artifact จาก ชื่อ", "artifact จากชื่อเรื่อง"];
+const RELIC_BY_NAME = ["ดู relic (จากชื่อ)", "relic จากชื่อ", "relic จาก ชื่อ"];
 
 function hasAny(text: string, arr: string[]) {
   const t = normalize(text);
@@ -146,16 +180,25 @@ function hasAny(text: string, arr: string[]) {
 /* ยืนยัน/ยกเลิก ครอบจักรวาล */
 const RE_CONFIRM = /^(ยืนยัน|ตกลง|ok|โอเค|confirm)$/i;
 const RE_CANCEL = /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
-const RE_RESET  = /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
+const RE_RESET = /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
 
 function detectIntent(t: string): Intent | null {
   if (RE_CANCEL.test(t)) return "cancel";
   if (hasAny(t, GI_CHARGING)) return "gi_topup";
   if (hasAny(t, HSR_CHARGING)) return "hsr_topup";
-  if (hasAny(t, ARTIFACT_FROM_UID)) return "artifact_enka";
-  if (hasAny(t, RELIC_FROM_UID)) return "relic_enka";
-  if (hasAny(t, ARTIFACT_GI)) return "artifact";
-  if (hasAny(t, RELIC_HSR)) return "relic";
+
+  // “จากชื่อ” มาก่อนถ้าพิมพ์ชัดเจน
+  if (hasAny(t, ARTIFACT_BY_NAME)) return "artifact_by_name";
+  if (hasAny(t, RELIC_BY_NAME)) return "relic_by_name";
+
+  // ถ้าบอก “จาก UID” → UID
+  if (hasAny(t, ARTIFACT_FROM_UID)) return "artifact_by_uid";
+  if (hasAny(t, RELIC_FROM_UID)) return "relic_by_uid";
+
+  // ค่าเริ่มต้น “ดู artifact genshin / relic …” → เข้าฟลว์จาก UID
+  if (hasAny(t, ARTIFACT_GI_DEFAULT)) return "artifact_by_uid";
+  if (hasAny(t, RELIC_HSR_DEFAULT)) return "relic_by_uid";
+
   if (/^(help|ช่วยด้วย|เมนู|เริ่มใหม่)$/i.test(t)) return "help";
   return null;
 }
@@ -210,12 +253,12 @@ function matchPackageSmart(rows: Array<{ name: string; price: number }>, text: s
 /* ---------- Reply helpers ---------- */
 function mainMenu() {
   return {
-    reply:
-      `เมนูหลัก:
+    reply: `เมนูหลัก:
 • เติม Genshin Impact
 • เติม Honkai: Star Rail
 • ดู Artifact Genshin (จากชื่อ) / ดู Relic Star Rail (จากชื่อ)
 • ดู Artifact Genshin (จาก UID) / ดู Relic Star Rail (จาก UID)`,
+    // ปุ่มดีฟอลต์ให้ไปโหมด UID
     quickReplies: [
       "เติม Genshin Impact",
       "เติม Honkai: Star Rail",
@@ -233,11 +276,12 @@ async function handleIntent(intent: Intent, s: Session) {
       quickReplies: [
         "เติม Genshin Impact",
         "เติม Honkai: Star Rail",
-        "ดู Artifact Genshin",
-        "ดู Relic Star Rail",
+        "ดู Artifact Genshin (จาก UID)",
+        "ดู Relic Star Rail (จาก UID)",
       ],
     };
   }
+
   if (intent === "gi_topup" || intent === "hsr_topup") {
     const game: GameKey = intent === "gi_topup" ? "gi" : "hsr";
     const list = await fetchProducts(game);
@@ -252,23 +296,30 @@ async function handleIntent(intent: Intent, s: Session) {
         `พิมพ์หมายเลข 1-${list.length} หรือพิมพ์ราคา (เช่น 179) / ตัวเลขในชื่อแพ็ก (980, 6480) / หรือพิมพ์ "รายเดือน"`,
     };
   }
-  if (intent === "artifact") {
+
+  // โหมดค้นจาก "ชื่อ" — ต้องพิมพ์ระบุจากชื่อเท่านั้น
+  if (intent === "artifact_by_name") {
     s.state = "waiting_artifact_char";
     s.game = "gi";
     s.productList = undefined;
-    return { reply: "อยากดู Artifact ของตัวไหนคะ? พิมพ์ชื่อมาได้เลย~" };
+    return { reply: "อยากดู Artifact ของตัวไหนคะ? (โหมดจากชื่อ) พิมพ์ชื่อมาได้เลย~" };
   }
-  if (intent === "relic") {
+  if (intent === "relic_by_name") {
     s.state = "waiting_relic_char";
     s.game = "hsr";
     s.productList = undefined;
-    return { reply: "อยากดู Relic ของตัวไหนคะ? พิมพ์ชื่อมาได้เลย~" };
+    return { reply: "อยากดู Relic ของตัวไหนคะ? (โหมดจากชื่อ) พิมพ์ชื่อมาได้เลย~" };
   }
-  if (intent === "artifact_enka" || intent === "relic_enka") {
+
+  // โหมดจาก UID (ค่าเริ่มต้น/ปุ่มหลัก)
+  if (intent === "artifact_by_uid" || intent === "relic_by_uid") {
     s.state = "waiting_enka_uid";
-    s.enka = { game: intent === "artifact_enka" ? "gi" : "hsr" };
-    return { reply: `กรุณาพิมพ์ UID ${s.enka.game === "gi" ? "Genshin" : "Star Rail"} ของคุณ (ตัวเลขเท่านั้น)` };
+    s.enka = { game: intent === "artifact_by_uid" ? "gi" : "hsr" };
+    return {
+      reply: `กรุณาพิมพ์ UID ${s.enka.game === "gi" ? "Genshin" : "Star Rail"} ของคุณ (ตัวเลขเท่านั้น)`,
+    };
   }
+
   return mainMenu();
 }
 
@@ -286,10 +337,9 @@ function sessionsReset(s: Session) {
 
 /* ===================== Route ===================== */
 export async function POST(req: Request) {
-  const { message, username, password, sessionId } = (await req.json()) as {
+  const { message, username, sessionId } = (await req.json()) as {
     message?: string;
     username?: string;
-    password?: string;
     sessionId?: string;
   };
 
@@ -301,15 +351,7 @@ export async function POST(req: Request) {
   /* ---------- Global reset ---------- */
   if (text && RE_RESET.test(text)) {
     sessions[key] = { state: "idle" };
-    return NextResponse.json({
-      reply: "รีเซ็ตขั้นตอนเรียบร้อย เริ่มใหม่ได้เลยค่ะ:",
-      quickReplies: [
-        "เติม Genshin Impact",
-        "เติม Honkai: Star Rail",
-        "ดู Artifact Genshin",
-        "ดู Relic Star Rail",
-      ],
-    });
+    return NextResponse.json(mainMenu());
   }
 
   /* ---------- Intent เมื่อ idle ---------- */
@@ -329,9 +371,7 @@ export async function POST(req: Request) {
     }
     const game: GameKey = s.state === "waiting_gi" ? "gi" : "hsr";
     const list =
-      s.productList && s.productList.length > 0
-        ? s.productList
-        : await fetchProducts(game);
+      s.productList && s.productList.length > 0 ? s.productList : await fetchProducts(game);
 
     let idx: number | null = pickIndexFromMessage(text, list.length);
     if (idx == null) idx = matchPackageSmart(list, text);
@@ -350,9 +390,7 @@ export async function POST(req: Request) {
     s.state = game === "gi" ? "waiting_uid_gi" : "waiting_uid_hsr";
     s.productList = undefined;
 
-    return NextResponse.json({
-      reply: "กรุณาพิมพ์ UID ของคุณ (ตัวเลขเท่านั้น)",
-    });
+    return NextResponse.json({ reply: "กรุณาพิมพ์ UID ของคุณ (ตัวเลขเท่านั้น)" });
   }
 
   /* ---------- Waiting UID (Topup) ---------- */
@@ -383,10 +421,7 @@ export async function POST(req: Request) {
       `ราคา: ${price.toFixed(2)} บาท\n\n` +
       `กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก`;
 
-    return NextResponse.json({
-      reply,
-      quickReplies: ["ยืนยัน", "ยกเลิก"],
-    });
+    return NextResponse.json({ reply, quickReplies: ["ยืนยัน", "ยกเลิก"] });
   }
 
   /* ---------- Confirm order ---------- */
@@ -443,9 +478,7 @@ export async function POST(req: Request) {
     s.state = "idle";
 
     if (!rows || rows.length === 0) {
-      return NextResponse.json({
-        reply: `ไม่พบข้อมูลเซ็ตของ ${raw} ค่ะ`,
-      });
+      return NextResponse.json({ reply: `ไม่พบข้อมูลเซ็ตของ ${raw} ค่ะ` });
     }
 
     const setShorts = (rows as RowDataPacket[]).map((r) => String((r as any).set_short || ""));
@@ -453,7 +486,7 @@ export async function POST(req: Request) {
     const lines = setShorts.map((x) => `- ${x}`).join("\n");
 
     return NextResponse.json({
-      reply: `${head} ที่เหมาะกับ ${raw} คือ:\n${lines}`,
+      reply: `${head} ที่เหมาะกับ ${raw} (จากชื่อ) คือ:\n${lines}`,
       quickReplies: ["คำนวณสเตตจากรูป", "ดูเซ็ตตัวอื่น"],
     });
   }
@@ -480,15 +513,18 @@ export async function POST(req: Request) {
 
       if (!j?.ok) {
         s.state = "idle";
-        return NextResponse.json({ reply: "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ" });
+        return NextResponse.json({
+          reply: "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
+        });
       }
       s.state = "waiting_pick_character";
       s.enka.player = j.player as string;
       s.enka.characters = j.characters as { id: number; name: string; level: number }[];
       s.enka.details = j.details as Record<string, unknown>;
 
-      const chips = (j.characters as { id: number; name: string; level: number }[])
-        .map((c) => `${c.name} (lv.${c.level})`);
+      const chips = (j.characters as { id: number; name: string; level: number }[]).map(
+        (c) => `${c.name} (lv.${c.level})`
+      );
 
       return NextResponse.json({
         reply: `พบตัวละครของ ${j.player} (UID: ${uid})\nเลือกตัวที่อยากดูของได้เลย:`,
@@ -505,25 +541,42 @@ export async function POST(req: Request) {
       new RegExp(`\\b${(c.name || "").replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i").test(text)
     );
     if (!target) {
-      return NextResponse.json({ reply: "ไม่พบชื่อตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ชื่อให้ตรงหรือเลือกจากปุ่มด่วนด้านล่าง" });
+      return NextResponse.json({
+        reply: "ไม่พบชื่อตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ชื่อให้ตรงหรือเลือกจากปุ่มด่วนด้านล่าง",
+      });
     }
 
     const d = (s.enka?.details as Record<string, unknown>) || {};
     const detail = d[String(target.id)] as {
       artifacts?: Array<{
-        piece: string; name: string; set?: string; main: string; subs: string[]; level?: number;
+        piece: string;
+        name: string;
+        set?: string;
+        main: string;
+        subs: string[];
+        level?: number;
       }>;
-      totalsFromGear?: { er: number; cr: number; cd: number; em: number; hp_pct: number; atk_pct: number; def_pct: number };
+      totalsFromGear?: {
+        er: number;
+        cr: number;
+        cd: number;
+        em: number;
+        hp_pct: number;
+        atk_pct: number;
+        def_pct: number;
+      };
       shownTotals?: Record<string, number>;
     };
 
     s.state = "idle";
     if (!detail) return NextResponse.json({ reply: "ไม่พบรายละเอียดชิ้นส่วนของตัวละครนี้ค่ะ" });
 
-    const lines = (detail.artifacts || []).map((a) => {
-      const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
-      return `• ${a.piece}: ${a.name} | main=${a.main}${subs}`;
-    }).join("\n");
+    const lines = (detail.artifacts || [])
+      .map((a) => {
+        const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
+        return `• ${a.piece}: ${a.name} | main=${a.main}${subs}`;
+      })
+      .join("\n");
 
     const head = `ของที่สวมใส่ของ ${target.name} (เลเวล ${target.level})`;
     const ask = `จะให้วิเคราะห์สเตตด้วย Gemini มั้ย?`;
