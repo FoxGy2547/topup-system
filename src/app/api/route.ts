@@ -21,7 +21,7 @@ type StateKey =
   | "confirm_order"
   | "waiting_enka_uid"
   | "waiting_pick_character"
-  | "picked_character"; // << เพิ่ม
+  | "picked_character";
 
 type Session = {
   state: StateKey;
@@ -41,7 +41,7 @@ type Session = {
     player?: string;
     characters?: { id: number; name: string; level: number }[];
     details?: Record<string, any>;
-    selectedId?: number; // << เพิ่ม
+    selectedId?: number;
   };
 };
 
@@ -162,10 +162,11 @@ function hasAny(text: string, arr: string[]) {
 }
 
 const RE_CONFIRM = /^(ยืนยัน|ตกลง|ok|โอเค|confirm)$/i;
-const RE_CANCEL = /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
+const RE_CANCEL =
+  /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
 const RE_RESET =
   /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
-const RE_ANALYZE = /(วิเคราะห์สเตต|วิเคราะห์.*gemini|analy[sz])/i; // << เพิ่ม
+const RE_ANALYZE = /(วิเคราะห์สเตต|วิเคราะห์.*gemini|analy[sz])/i;
 
 function detectIntent(text: string): Intent | null {
   const t = text.trim();
@@ -453,7 +454,7 @@ UID: ${uid}
       }[];
       s.enka.details = j.details as Record<string, any>;
 
-      // ✅ ใช้ชื่อจาก details เป็นหลัก ถ้าไม่มีค่อย fallback
+      // แสดงปุ่มชื่อตัวละคร
       const chips = (s.enka.characters || [])
         .slice(0, 12)
         .map((c) => {
@@ -491,7 +492,7 @@ UID: ${uid}
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
 
-    // ✅ รองรับเลือกด้วย #รหัส
+    // รองรับพิมพ์ #ID
     const idMatch = text.match(/#?(\d{6,})/);
     let target: { id: number; name: string; level: number } | null = null;
 
@@ -500,7 +501,7 @@ UID: ${uid}
       target = chars.find((c) => c.id === pickId) || null;
     }
     if (!target) {
-      // จับคู่ด้วยชื่อ (รวมชื่อจาก details)
+      // จับชื่อ (รวมชื่อจาก details)
       target =
         chars.find((c) => {
           const nameFromDetail = details[String(c.id)]?.name as
@@ -566,7 +567,7 @@ UID: ${uid}
       };
     };
 
-    // แนะนำเซ็ตจาก DB
+    // ดึงชุดจาก DB
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -589,7 +590,7 @@ UID: ${uid}
       setRows = [];
     }
 
-    // เก็บ context เพื่อกดวิเคราะห์ต่อ
+    // เก็บ context
     s.state = "picked_character";
     s.enka = s.enka || {};
     s.enka.selectedId = target.id;
@@ -619,7 +620,7 @@ UID: ${uid}
     });
   }
 
-  // ===== วิเคราะห์หลังเลือกตัวละคร =====
+  /* ---------- วิเคราะห์หลังเลือกตัวละคร ---------- */
   if (s.state === "picked_character") {
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
@@ -673,21 +674,25 @@ UID: ${uid}
         }),
       });
       const j = await r.json();
-      if (j?.ok) {
+
+      const textOut = (j?.text || "").trim();
+      if (j?.ok && textOut) {
+        // ใส่ข้อความสถานะไว้หัวข้อความเดียวกัน
         return NextResponse.json({
-          reply: `สรุปคำแนะนำสำหรับ ${d.name}:\n${j.text}`,
+          reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลการวิเคราะห์สำหรับ ${d.name}:\n${textOut}`,
           quickReplies: ["ยกเลิก"],
         });
       }
+
       const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
       return NextResponse.json({
-        reply: `สรุปคำแนะนำ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
+        reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
         quickReplies: ["ยกเลิก"],
       });
     } catch {
       const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
       return NextResponse.json({
-        reply: `สรุปคำแนะนำ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
+        reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}`,
         quickReplies: ["ยกเลิก"],
       });
     }
@@ -717,17 +722,13 @@ function simpleFallbackAdvice(
   },
   shown?: { er?: number; cr?: number; cd?: number }
 ): string {
-  // totals เป็น % สะสมจากของ/อาวุธอยู่แล้ว
-  // shown เป็นสัดส่วน (1.56 = 156%) จาก enka
+  // totals = % from gear; shown = สัดส่วนจาก enka (1.56 = 156%)
   const cr = totals?.cr ?? (shown?.cr != null ? shown.cr * 100 : 0);
   const cd = totals?.cd ?? (shown?.cd != null ? shown.cd * 100 : 0);
-  const erTotal = shown?.er != null ? shown.er * 100 : undefined;
-  const er =
-    totals?.er != null
-      ? totals.er + 100 // เปลี่ยนเป็นรวม
-      : erTotal ?? 0;
+  const erShown = shown?.er != null ? shown.er * 100 : undefined;
+  const er = totals?.er != null ? totals.er + 100 : (erShown ?? 0);
 
-  // เป้า default สำหรับ DPS ทั่วไป
+  // เป้าพื้นฐาน (golden-ish) ทั่วไป
   const target = { cr: 70, cd: 140, er: 120 };
 
   const lack: string[] = [];
@@ -735,7 +736,9 @@ function simpleFallbackAdvice(
     lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
   if (cd < target.cd)
     lack.push(
-      `CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`
+      `CD ต่ำ (ปัจจุบัน ~${cd.toFixed(
+        0
+      )}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`
     );
   if (er < target.er)
     lack.push(
@@ -744,7 +747,7 @@ function simpleFallbackAdvice(
       )}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`
     );
 
-  if (!lack.length)
-    return "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
-  return lack.join("\n");
+  return lack.length
+    ? lack.join("\n")
+    : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
 }
