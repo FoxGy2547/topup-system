@@ -40,7 +40,7 @@ type Session = {
     game?: GameKey;
     player?: string;
     characters?: { id: number; name: string; level: number }[];
-    details?: Record<string, unknown>;
+    details?: Record<string, any>;
   };
 };
 
@@ -124,8 +124,8 @@ function parseAmountToReceive(game: GameKey, productName: string): string {
 type Intent =
   | "gi_topup"
   | "hsr_topup"
-  | "artifact_uid" // ดู artifact ด้วย UID (GI)
-  | "relic_uid"    // ดู relic ด้วย UID (HSR)
+  | "artifact_uid"
+  | "relic_uid"
   | "cancel"
   | "help";
 
@@ -138,7 +138,6 @@ const HSR_CHARGING = [
   "top up hsr", "ซื้อ oneiric", "เพชร hsr", "คริสตัล hsr", "oneiric shard",
 ];
 
-// บังคับ artifact/relic → โหมด UID เสมอ
 const RE_ARTIFACT_ANY = /(artifact|อาร์ติ|อาร์ติแฟกต์)/i;
 const RE_RELIC_ANY     = /(relic|เรลิก)/i;
 
@@ -147,7 +146,6 @@ function hasAny(text: string, arr: string[]) {
   return arr.some((k) => t.includes(normalize(k)));
 }
 
-/* confirm/cancel/reset */
 const RE_CONFIRM = /^(ยืนยัน|ตกลง|ok|โอเค|confirm)$/i;
 const RE_CANCEL  = /^(ยกเลิก|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน|cancel|stop)$/i;
 const RE_RESET   = /^(ยกเลิก|ยกเลิกคำสั่ง|เปลี่ยนใจ|เริ่มใหม่|reset|cancel|stop|ไม่เอา(?:ละ|แล้ว)?|พอ|ไว้ก่อน)$/i;
@@ -180,11 +178,9 @@ function mainMenu() {
     ],
   };
 }
-
 function onlyCancel() {
   return { quickReplies: ["ยกเลิก"] };
 }
-
 function sessionsReset(s: Session) {
   s.state = "idle";
   s.game = undefined;
@@ -285,7 +281,6 @@ ${renderProductList(list)}
         idx = bestIdx;
       }
     }
-
     if (idx == null || idx < 0 || idx >= list.length) {
       return NextResponse.json({
         reply: `ไม่พบแพ็กเกจที่เลือกค่ะ ลองพิมพ์หมายเลข 1-${list.length} หรือพิมพ์ราคา (เช่น 179)`,
@@ -415,11 +410,17 @@ UID: ${uid}
       s.state = "waiting_pick_character";
       s.enka.player = j.player as string;
       s.enka.characters = j.characters as { id: number; name: string; level: number }[];
-      s.enka.details = j.details as Record<string, unknown>;
+      s.enka.details = j.details as Record<string, any>;
 
-      const chips = (j.characters as { id: number; name: string; level: number }[])
-        .slice(0, 10)
-        .map((c) => `${c.name} (lv.${c.level})`);
+      // ✅ ใช้ชื่อจาก details เป็นหลัก ถ้าไม่มีค่อย fallback
+      const chips = (s.enka.characters || [])
+        .slice(0, 12)
+        .map((c) => {
+          const fromDetail = s.enka?.details?.[String(c.id)];
+          const showName: string =
+            (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
+          return `${showName} (lv.${c.level})`;
+        });
 
       return NextResponse.json({
         reply: `พบตัวละครของ ${j.player} (UID: ${uid})\nเลือกตัวที่อยากดูของได้เลย:`,
@@ -439,21 +440,43 @@ UID: ${uid}
       return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
     }
 
-    const target = (s.enka?.characters || []).find((c) =>
-      new RegExp(`\\b${(c.name || "").replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i").test(text)
-    );
+    const chars = s.enka?.characters || [];
+    const details = s.enka?.details || {};
+
+    // ✅ รองรับเลือกด้วย #รหัส (จากปุ่มที่แสดงเป็น #ID)
+    const idMatch = text.match(/#?(\d{6,})/);
+    let target = null as { id: number; name: string; level: number } | null;
+
+    if (idMatch) {
+      const pickId = Number(idMatch[1]);
+      target = chars.find((c) => c.id === pickId) || null;
+    }
     if (!target) {
-      const chips = (s.enka?.characters || [])
-        .slice(0, 10)
-        .map((c) => `${c.name} (lv.${c.level})`);
+      // จับคู่ด้วยชื่อ (รวมชื่อจาก details)
+      target = chars.find((c) => {
+        const nameFromDetail = details[String(c.id)]?.name as string | undefined;
+        const nm = (nameFromDetail || c.name || "").trim();
+        if (!nm) return false;
+        const re = new RegExp(`\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
+        return re.test(text);
+      }) || null;
+    }
+
+    if (!target) {
+      const chips = chars
+        .slice(0, 12)
+        .map((c) => {
+          const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
+          return `${nm} (lv.${c.level})`;
+        });
       return NextResponse.json({
-        reply: "ไม่พบชื่อตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด่วนด้านล่าง",
+        reply: "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
         quickReplies: [...chips, "ยกเลิก"],
       });
     }
 
-    const d = (s.enka?.details as Record<string, unknown>) || {};
-    const detail = d[String(target.id)] as {
+    const d = details[String(target.id)] as {
+      name?: string;
       artifacts?: Array<{
         piece: string; name: string; set?: string; main: string; subs: string[]; level?: number;
       }>;
@@ -463,7 +486,7 @@ UID: ${uid}
     // แนะนำเซ็ตจาก DB
     let setRows: RowDataPacket[] = [];
     try {
-      const raw = target.name;
+      const raw = d?.name || target.name || `#${target.id}`;
       const q = `%${raw}%`;
       let [rows] = await db.query<RowDataPacket[]>(
         `SELECT set_short FROM character_sets WHERE game = ? AND character_name = ?`,
@@ -486,12 +509,13 @@ UID: ${uid}
     s.state = "idle";
 
     const recSets = setRows.map((r) => `• ${String((r as any).set_short || "")}`).join("\n") || "• (ไม่พบข้อมูลในฐานข้อมูล)";
-    const gearLines = (detail?.artifacts || []).map((a) => {
+    const gearLines = (d?.artifacts || []).map((a) => {
       const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
       return `• ${a.piece}: ${a.name}${a.set ? ` (${a.set})` : ""} | main=${a.main}${subs}`;
     }).join("\n") || "(ไม่พบชิ้นส่วน)";
 
-    const head = `ของที่สวมใส่ของ ${target.name} (เลเวล ${target.level})`;
+    const shownName = d?.name || target.name || `#${target.id}`;
+    const head = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
     const recHead = `Artifact/Relic ที่ฐานข้อมูลแนะนำ:`;
     const ask = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
 
