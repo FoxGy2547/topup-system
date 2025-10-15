@@ -420,7 +420,6 @@ UID: ${uid}
     const game = s.enka.game || "gi";
     try {
       const base = new URL(req.url).origin;
-      // 🔧 แยก endpoint ตามเกม
       const enkaUrl = game === "hsr" ? `${base}/api/enka-hsr` : `${base}/api/enka-gi`;
 
       const r = await fetch(enkaUrl, {
@@ -488,7 +487,6 @@ UID: ${uid}
     const details = s.enka?.details || {};
     const game = s.enka?.game || "gi";
 
-    // GI avatarId มัก 7–9 หลัก (เช่น 10000052), HSR ~ 3–6 หลัก → แยกตามเกม
     const idMatch =
       game === "hsr"
         ? text.match(/\b#?(\d{3,6})\b/)
@@ -552,7 +550,7 @@ UID: ${uid}
       }>;
     };
 
-    /* ==== ดึง “ชุดที่แนะนำ” จาก DB (ยังคงใช้ตารางเดิม) ==== */
+    /* ==== ดึง “ชุดที่แนะนำ” จาก DB ==== */
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -579,7 +577,7 @@ UID: ${uid}
       if (!combo) return "";
       const codes = combo.split("/").map(s => s.trim()).filter(Boolean);
       if (codes.length === 0) return "";
-      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ยังใช้โฟลเดอร์เดิมที่คุณมี
+      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ใช้โฟลเดอร์เดิม
       const imgs = codes.map(c =>
         `<img src="/pic/${folder}/${c}.png" alt="${c}" width="20" height="20" style="vertical-align:middle;margin-right:6px" />`
       ).join("");
@@ -645,7 +643,7 @@ ${ask}`,
       });
     }
 
-    const game = s.enka?.game || "gi";
+    const game: GameKey = s.enka?.game || "gi";
     const id = s.enka?.selectedId;
     const details = s.enka?.details || {};
     const d = id ? details[String(id)] : null;
@@ -659,32 +657,38 @@ ${ask}`,
       });
     }
 
-    if (game !== "gi") {
-      return NextResponse.json({
-        reply:
-          "ตอนนี้โหมดวิเคราะห์อัตโนมัติรองรับ Genshin ก่อนนะคะ (HSR จะตามมาเร็ว ๆ นี้)",
-        quickReplies: ["ยกเลิก"],
-      });
-    }
-
     try {
       const base = new URL(req.url).origin;
       const thinking = `⌛ กำลังคำนวณคำแนะนำ…`;
-      const r = await fetch(`${base}/api/gi-advice`, {
+
+      // เรียก endpoint เดียว /api/advice รองรับทั้ง GI/HSR
+      const body =
+        game === "gi"
+          ? {
+              game: "gi",
+              mode: "from-enka",
+              character: d.name || `#${id}`,
+              artifacts: d.artifacts || [],
+              totalsFromGear: d.totalsFromGear || {},
+              shownTotals: d.shownTotals || {},
+            }
+          : {
+              game: "hsr",
+              mode: "from-enka",
+              character: d.name || `#${id}`,
+              artifacts: d.relics || [],
+              shownTotals: d.shownTotals || {},
+            };
+
+      const r = await fetch(`${base}/api/advice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "from-enka",
-          character: d.name || `#${id}`,
-          artifacts: d.artifacts || [],
-          totalsFromGear: d.totalsFromGear,
-          shownTotals: d.shownTotals,
-        }),
+        body: JSON.stringify(body),
       });
-      const j = await r.json();
+      const j = await r.json().catch(() => ({} as any));
 
-      const textOut = (j?.text || "").trim();
-      s.lastAdviceError = (j?.ok ? null : (j?.error as string)) || null;
+      const textOut = String(j?.text || "").trim();
+      s.lastAdviceError = j?.ok ? null : (j?.error as string) || null;
 
       if (j?.ok && textOut) {
         return NextResponse.json({
@@ -693,16 +697,22 @@ ${ask}`,
         });
       }
 
-      const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
+      const fb =
+        game === "gi"
+          ? simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals)
+          : simpleFallbackAdviceHSR(d?.shownTotals);
       const reason =
-        s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : "";
+        s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : (r.ok ? "" : `\n(HTTP ${r.status})`);
       return NextResponse.json({
         reply: `${thinking}\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}${reason}`,
         quickReplies: ["ยกเลิก"],
       });
     } catch (e) {
       s.lastAdviceError = (e as Error)?.message || "unknown_error";
-      const fb = simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals);
+      const fb =
+        (s.enka?.game || "gi") === "gi"
+          ? simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals)
+          : simpleFallbackAdviceHSR(d?.shownTotals);
       return NextResponse.json({
         reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})`,
         quickReplies: ["ยกเลิก"],
@@ -730,7 +740,7 @@ ${ask}`,
   });
 }
 
-/* ===== helper fallback แบบเบา ๆ ===== */
+/* ===== helper fallback แบบเบา ๆ (GI) ===== */
 function simpleFallbackAdvice(
   totals?: {
     er?: number; cr?: number; cd?: number; em?: number;
@@ -750,6 +760,29 @@ function simpleFallbackAdvice(
   if (cd < target.cd) lack.push(`CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`);
   if (er < target.er) lack.push(`ER ต่ำ (รวม ~${er.toFixed(0)}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`);
   return lack.length ? lack.join("\n") : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
+}
+
+/* ===== helper fallback แบบเบา ๆ (HSR) ===== */
+function simpleFallbackAdviceHSR(
+  shown?: {
+    cr?: number; cd?: number; err?: number; ehr?: number; spd?: number;
+  }
+): string {
+  const pct = (x?: number) => (typeof x === "number" ? x * 100 : 0);
+  const cr = pct(shown?.cr);
+  const cd = pct(shown?.cd);
+  const err = pct(shown?.err);
+  const ehr = pct(shown?.ehr);
+  const spd = shown?.spd ?? 0;
+
+  const lacks: string[] = [];
+  if (cr < 70) lacks.push(`CR ต่ำ (~${cr.toFixed(0)}%) → เติม CR จากซับ/ชิ้นส่วน`);
+  if (cd < 140) lacks.push(`CD ต่ำ (~${cd.toFixed(0)}%) → หา CD จากซับหรือเปลี่ยนหมวก CR/CD ตามที่ขาด`);
+  if (err < 100) lacks.push(`ERR ต่ำ (~${err.toFixed(0)}%) → หา ERR จากเชือก/ซับ ให้แตะ 100–120%`);
+  if (spd < 120) lacks.push(`SPD ต่ำ (~${spd.toFixed(0)}) → พยายามแตะ breakpoint 120/134/147 ตามทีม`);
+  if (ehr < 67) lacks.push(`EHR ต่ำ (~${ehr.toFixed(0)}%) → สำหรับสายดีบัฟควร ≥ ~67%`);
+
+  return lacks.length ? lacks.join("\n") : "ค่าสรุปพื้นฐานถึงเกณฑ์ทั่วไปแล้ว เน้นรีโรลซับค่า CR/CD/SPD ให้สมดุลตามบทบาท";
 }
 
 /* ---------- Intent detector ---------- */
