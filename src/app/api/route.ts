@@ -421,15 +421,33 @@ UID: ${uid}
     try {
       const base = new URL(req.url).origin;
 
-      // ✅ แยก endpoint: GI -> /api/enka-gi, HSR -> /api/enka-hsr
-      const enkaUrl = game === "gi" ? `${base}/api/enka-gi` : `${base}/api/enka-hsr`;
+      // ลอง endpoint แบบแยกก่อน แล้วค่อย fallback ไป /api/enka (ของเก่า)
+      const primary =
+        game === "gi" ? `${base}/api/enka-gi` : `${base}/api/enka-hsr`;
+      const fallback = `${base}/api/enka`;
 
-      const r = await fetch(enkaUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid }),
-      });
-      const j = await r.json();
+      async function tryFetchEnka() {
+        // 1) แบบแยก (ส่ง { uid })
+        try {
+          const r1 = await fetch(primary, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uid }),
+          });
+          if (r1.ok) return await r1.json();
+          // ถ้า 404/405/500 ให้ลองตัวถัดไป
+        } catch { /* noop */ }
+
+        // 2) ของเก่า (ส่ง { game, uid })
+        const r2 = await fetch(fallback, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ game, uid }),
+        });
+        return await r2.json();
+      }
+
+      const j = await tryFetchEnka();
 
       if (!j?.ok) {
         s.state = "idle";
@@ -538,7 +556,7 @@ UID: ${uid}
       };
     };
 
-    /* ==== ดึง “ชุดที่แนะนำ” → แสดงเป็นไอคอน ==== */
+    /* ==== ดึง “ชุดที่แนะนำ” → แสดงเป็นไอคอนจาก public/pic/<game>/<short>.png ==== */
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
