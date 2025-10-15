@@ -420,14 +420,14 @@ UID: ${uid}
     const game = s.enka.game || "gi";
     try {
       const base = new URL(req.url).origin;
-      // 🔥 แยก endpoint ชัดเจน ตามเกม
-      const enkaUrl =
-        game === "hsr" ? `${base}/api/enka-hsr` : `${base}/api/enka-gi`;
+
+      // ✅ แยก endpoint: GI -> /api/enka-gi, HSR -> /api/enka-hsr
+      const enkaUrl = game === "gi" ? `${base}/api/enka-gi` : `${base}/api/enka-hsr`;
 
       const r = await fetch(enkaUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid }), // ไม่ต้องส่ง game แล้ว
+        body: JSON.stringify({ uid }),
       });
       const j = await r.json();
 
@@ -497,15 +497,10 @@ UID: ${uid}
     if (!target) {
       target =
         chars.find((c) => {
-          const nameFromDetail = details[String(c.id)]?.name as
-            | string
-            | undefined;
+          const nameFromDetail = details[String(c.id)]?.name as string | undefined;
           const nm = (nameFromDetail || c.name || "").trim();
           if (!nm) return false;
-          const re = new RegExp(
-            `\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`,
-            "i"
-          );
+          const re = new RegExp(`\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
           return re.test(text);
         }) || null;
     }
@@ -533,34 +528,17 @@ UID: ${uid}
         level?: number;
       }>;
       totalsFromGear?: {
-        er: number;
-        cr: number;
-        cd: number;
-        em: number;
-        hp_pct: number;
-        atk_pct: number;
-        def_pct: number;
+        er: number; cr: number; cd: number; em: number;
+        hp_pct: number; atk_pct: number; def_pct: number;
       };
       shownTotals?: {
-        hp?: number;
-        atk?: number;
-        def?: number;
-        em?: number;
-        er?: number;
-        cr?: number;
-        cd?: number;
-        pyro?: number;
-        hydro?: number;
-        cryo?: number;
-        electro?: number;
-        anemo?: number;
-        geo?: number;
-        dendro?: number;
-        physical?: number;
+        hp?: number; atk?: number; def?: number; em?: number;
+        er?: number; cr?: number; cd?: number;
+        pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number;
       };
     };
 
-    /* ==== ดึง “ชุดที่แนะนำ” → แสดงเป็นไอคอนให้ถูกโฟลเดอร์ตามเกม ==== */
+    /* ==== ดึง “ชุดที่แนะนำ” → แสดงเป็นไอคอน ==== */
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -585,15 +563,12 @@ UID: ${uid}
 
     function shortToIcons(combo: string): string {
       if (!combo) return "";
-      const folder = (s.enka?.game === "hsr") ? "hsr" : "gi"; // 🛠 เปลี่ยนตามเกม
-      const codes = combo.split("/").map((s) => s.trim()).filter(Boolean);
+      const codes = combo.split("/").map(s => s.trim()).filter(Boolean);
       if (codes.length === 0) return "";
-      const imgs = codes
-        .map(
-          (c) =>
-            `<img src="/pic/${folder}/${c}.png" alt="${c}" width="20" height="20" style="vertical-align:middle;margin-right:6px" />`
-        )
-        .join("");
+      const folder = (s.enka?.game === "hsr") ? "hsr" : "gi";
+      const imgs = codes.map(c =>
+        `<img src="/pic/${folder}/${c}.png" alt="${c}" width="20" height="20" style="vertical-align:middle;margin-right:6px" />`
+      ).join("");
       return imgs;
     }
 
@@ -614,11 +589,8 @@ UID: ${uid}
     const gearLines =
       (d?.artifacts || [])
         .map((a) => {
-          const subs =
-            a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
-          return `• ${a.piece}: ${a.name}${
-            a.set ? ` (${a.set})` : ""
-          } | main=${a.main}${subs}`;
+          const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
+          return `• ${a.piece}: ${a.name}${a.set ? ` (${a.set})` : ""} | main=${a.main}${subs}`;
         })
         .join("\n") || "(ไม่พบชิ้นส่วน)";
 
@@ -728,22 +700,16 @@ ${ask}`,
   }
 
   const step =
-    s.state === "waiting_enka_uid"
-      ? "ขอ UID"
-      : s.state === "waiting_pick_character"
-      ? "เลือกตัวละคร"
-      : s.state === "picked_character"
-      ? "วิเคราะห์สเตต"
-      : s.state === "waiting_gi" || s.state === "waiting_hsr"
-      ? "เลือกแพ็ก"
-      : s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr"
-      ? "ขอ UID"
-      : s.state === "confirm_order"
-      ? "ยืนยันคำสั่งซื้อ"
-      : "ดำเนินการ";
+    s.state === "waiting_enka_uid" ? "ขอ UID" :
+    s.state === "waiting_pick_character" ? "เลือกตัวละคร" :
+    s.state === "picked_character" ? "วิเคราะห์สเตต" :
+    s.state === "waiting_gi" || s.state === "waiting_hsr" ? "เลือกแพ็ก" :
+    s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr" ? "ขอ UID" :
+    s.state === "confirm_order" ? "ยืนยันคำสั่งซื้อ" : "ดำเนินการ";
 
   return NextResponse.json({
-    reply: `เรากำลังอยู่ที่ขั้น “${step}” อยู่เลยนะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลย~`,
+    reply:
+      `เรากำลังอยู่ที่ขั้น “${step}” อยู่เลยนะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลย~`,
     ...onlyCancel(),
   });
 }
@@ -751,13 +717,8 @@ ${ask}`,
 /* ===== helper fallback แบบเบา ๆ ===== */
 function simpleFallbackAdvice(
   totals?: {
-    er?: number;
-    cr?: number;
-    cd?: number;
-    em?: number;
-    hp_pct?: number;
-    atk_pct?: number;
-    def_pct?: number;
+    er?: number; cr?: number; cd?: number; em?: number;
+    hp_pct?: number; atk_pct?: number; def_pct?: number;
   },
   shown?: { er?: number; cr?: number; cd?: number }
 ): string {
@@ -769,23 +730,10 @@ function simpleFallbackAdvice(
   const target = { cr: 70, cd: 140, er: 120 };
 
   const lack: string[] = [];
-  if (cr < target.cr)
-    lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
-  if (cd < target.cd)
-    lack.push(
-      `CD ต่ำ (ปัจจุบัน ~${cd.toFixed(
-        0
-      )}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`
-    );
-  if (er < target.er)
-    lack.push(
-      `ER ต่ำ (รวม ~${er.toFixed(
-        0
-      )}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`
-    );
-  return lack.length
-    ? lack.join("\n")
-    : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
+  if (cr < target.cr) lack.push(`CR ต่ำ (ปัจจุบัน ~${cr.toFixed(0)}%) → เติม CR จากหมวก/ซับ`);
+  if (cd < target.cd) lack.push(`CD ต่ำ (ปัจจุบัน ~${cd.toFixed(0)}%) → หา CD จากซับ หรือใช้หมวก CR แล้วดัน CD จากซับ`);
+  if (er < target.er) lack.push(`ER ต่ำ (รวม ~${er.toFixed(0)}%) → หา ER จากทราย/ซับ/อาวุธ ให้แตะ ~${target.er}%`);
+  return lack.length ? lack.join("\n") : "ค่าสรุปพื้นฐานถึงเกณฑ์แล้ว โฟกัสรีโรลซับให้สวยขึ้นต่อได้เลย";
 }
 
 /* ---------- Intent detector ---------- */
