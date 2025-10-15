@@ -2,21 +2,18 @@
    ดึงโปรไฟล์จาก enka.network (GI/HSR) + คืนตัวละคร, ของ/เรลิก, อาวุธ, ค่ารวม
    — ไม่มี implicit any — */
 import { NextRequest, NextResponse } from "next/server";
-import giMap from "@/data/gi_characters.json";
-import hsrMap from "@/data/hsr_characters.json";
+import giMap from "@/data/gi_characters.json"; // map id -> ชื่อจริง
 
 type GameKey = "gi" | "hsr";
 
 /* ---------- helper: ชื่อจริงจาก json ---------- */
-function charName(game: GameKey, id?: number, fallback?: string): string {
+function giName(id?: number, fallback?: string): string {
   if (!id) return fallback || "";
-  const map = (game === "gi" ? giMap : hsrMap) as Record<string, string>;
-  return map[String(id)] || fallback || `#${id}`;
+  return (giMap as Record<string, string>)[String(id)] || fallback || `#${id}`;
 }
 
 /* ---------- ชื่อ prop ให้อ่านง่าย (ใช้ได้ทั้ง GI/HSR) ---------- */
 const PROP_MAP: Record<string, string> = {
-  // GI common
   FIGHT_PROP_BASE_HP: "HP",
   FIGHT_PROP_HP: "HP",
   FIGHT_PROP_HP_PERCENT: "HP%",
@@ -45,18 +42,6 @@ const PROP_MAP: Record<string, string> = {
   FIGHT_PROP_ICE_ADD_HURT: "Cryo DMG%",
   FIGHT_PROP_ROCK_ADD_HURT: "Geo DMG%",
   FIGHT_PROP_GRASS_ADD_HURT: "Dendro DMG%",
-
-  // HSR core
-  FIGHT_PROP_SPEED: "SPD",
-  FIGHT_PROP_SPEED_PERCENT: "SPD%",
-  FIGHT_PROP_ENERGY_REGENERATION: "Energy Regen%",         // ERR
-  FIGHT_PROP_EFFECT_HIT_RATE: "Effect Hit Rate%",          // EHR
-  FIGHT_PROP_BREAK_DAMAGE_ADDED_RATIO: "Break Effect%",
-  // HSR dmg
-  FIGHT_PROP_THUNDER_ADD_HURT: "Lightning DMG%",
-  FIGHT_PROP_QUANTUM_ADD_HURT: "Quantum DMG%",
-  FIGHT_PROP_IMAGINARY_ADD_HURT: "Imaginary DMG%",
-  // reuse physical/fire/ice/wind keysด้านบน
 };
 function prettyProp(key?: string): string {
   if (!key) return "";
@@ -127,7 +112,7 @@ type GiTop = {
 type HsrMain = { type?: string; value?: number };
 type HsrSub = { type?: string; value?: number };
 type HsrFlat = {
-  relicType?: string; // HEAD/HANDS/BODY/FEET/PLANAR_SPHERE/LINK_ROPE
+  relicType?: string; // HEAD / HANDS / BODY / FEET / PLANAR_SPHERE / LINK_ROPE
   name?: string;
   setName?: string;
   icon?: string;
@@ -158,7 +143,7 @@ export type ArtifactSummary = {
   main: string;
   subs: string[];
   level?: number;
-  icon?: string;
+  icon?: string; // ยังคง type เดิมไว้ เพื่อไม่ให้ระบบอื่นพัง แต่จะ "ไม่คืนค่า" (undefined)
 };
 export type RelicSummary = {
   piece: string;
@@ -167,7 +152,7 @@ export type RelicSummary = {
   main: string;
   subs: string[];
   level?: number;
-  icon?: string;
+  icon?: string; // เช่นเดียวกัน ไม่คืนค่า
 };
 
 export type CharacterLite = { id: number; name: string; level: number };
@@ -184,7 +169,7 @@ export type HsrDetail = {
   name: string;
   level: number;
   relics: RelicSummary[];
-  shownTotals?: TotalsShownHSR;
+  shownTotals?: Record<string, number>;
 };
 
 type Totals = {
@@ -197,14 +182,21 @@ type Totals = {
   def_pct: number;
 };
 type TotalsShown = {
-  hp?: number; atk?: number; def?: number; em?: number;
-  er?: number; cr?: number; cd?: number;
-  pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number;
-};
-type TotalsShownHSR = {
-  hp?: number; atk?: number; def?: number; spd?: number;
-  cr?: number; cd?: number; err?: number; ehr?: number; be?: number;
-  physical?: number; fire?: number; ice?: number; lightning?: number; wind?: number; quantum?: number; imaginary?: number;
+  hp?: number;
+  atk?: number;
+  def?: number;
+  em?: number;
+  er?: number;
+  cr?: number;
+  cd?: number;
+  pyro?: number;
+  hydro?: number;
+  cryo?: number;
+  electro?: number;
+  anemo?: number;
+  geo?: number;
+  dendro?: number;
+  physical?: number;
 };
 
 /* ---------- Helpers ---------- */
@@ -239,6 +231,8 @@ function calcTotalsFromArtifacts(arts: ArtifactSummary[]): Totals {
 /* ---------- GI mappers (ทนเคสอาวุธ & ไม่คืน icon) ---------- */
 function mapGiEquip(e: GiEquip): ArtifactSummary {
   const flat = e.flat ?? {};
+
+  // Enka บางเคสไม่ส่ง equipType → ใช้ทั้ง flag e.weapon และเช็คข้อความ "WEAPON"
   const looksLikeWeapon =
     !!e.weapon || String(flat.equipType || "").toUpperCase().includes("WEAPON");
 
@@ -283,7 +277,7 @@ function mapGiEquip(e: GiEquip): ArtifactSummary {
     main,
     subs,
     level: e.reliquary?.level ?? e.weapon?.level ?? undefined,
-    icon: undefined,
+    icon: undefined, // << ไม่คืนไอคอนจาก Enka แล้วจ้า
   };
 }
 
@@ -314,7 +308,7 @@ function mapGiShownTotals(c: GiCharacter): TotalsShown {
 
 function mapGiCharacter(c: GiCharacter): GiDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
-  const name = charName("gi", id, c.name ?? c.avatarName);
+  const name = giName(id, c.name ?? c.avatarName);
   const level = c.propMap?.["4001"]?.val ?? c.level ?? c.avatarLevel ?? 1;
 
   const equips: GiEquip[] = Array.isArray(c.equipList) ? c.equipList : [];
@@ -346,40 +340,15 @@ function mapHsrRelic(r: HsrRelic): RelicSummary {
     main,
     subs,
     level: r.relic?.level ?? undefined,
-    icon: undefined,
-  };
-}
-function mapHsrShownTotals(c: HsrCharacter): TotalsShownHSR {
-  const fp = c.fightPropMap || {};
-  const get = (k: string): number | undefined =>
-    typeof fp[k] === "number" ? fp[k] : undefined;
-
-  return {
-    hp: get("FIGHT_PROP_HP"),
-    atk: get("FIGHT_PROP_ATTACK"),
-    def: get("FIGHT_PROP_DEFENSE"),
-    spd: get("FIGHT_PROP_SPEED"),
-    cr: get("FIGHT_PROP_CRITICAL") ?? get("FIGHT_PROP_CRIT_RATE"),
-    cd: get("FIGHT_PROP_CRITICAL_HURT") ?? get("FIGHT_PROP_CRIT_DMG"),
-    err: get("FIGHT_PROP_ENERGY_REGENERATION"),
-    ehr: get("FIGHT_PROP_EFFECT_HIT_RATE"),
-    be: get("FIGHT_PROP_BREAK_DAMAGE_ADDED_RATIO"),
-    physical: get("FIGHT_PROP_PHYSICAL_ADD_HURT"),
-    fire: get("FIGHT_PROP_FIRE_ADD_HURT"),
-    ice: get("FIGHT_PROP_ICE_ADD_HURT"),
-    lightning: get("FIGHT_PROP_THUNDER_ADD_HURT"),
-    wind: get("FIGHT_PROP_WIND_ADD_HURT"),
-    quantum: get("FIGHT_PROP_QUANTUM_ADD_HURT"),
-    imaginary: get("FIGHT_PROP_IMAGINARY_ADD_HURT"),
+    icon: undefined, // << ไม่คืนไอคอนจาก Enka แล้วจ้า
   };
 }
 function mapHsrCharacter(c: HsrCharacter): HsrDetail {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
-  const name = charName("hsr", id, c.name ?? c.avatarName);
+  const name = giName(id, c.name ?? c.avatarName);
   const level = c.level ?? 1;
   const relics: RelicSummary[] = (c.relics ?? []).map((r) => mapHsrRelic(r));
-  const shownTotals = mapHsrShownTotals(c);
-  return { id, name, level, relics, shownTotals };
+  return { id, name, level, relics, shownTotals: c.fightPropMap || {} };
 }
 
 /* ---------- Route ---------- */
@@ -388,9 +357,8 @@ export async function POST(req: NextRequest) {
     const { game = "gi", uid } = (await req.json().catch(() => ({}))) as { game?: GameKey; uid?: string };
     if (!uid) return NextResponse.json({ ok: false, error: "missing_uid" }, { status: 400 });
 
-    // ใช้ URL โฉมใหม่ของ Enka:
-    const base = game === "gi" ? "https://enka.network/u/" : "https://enka.network/hsr/";
-    const url = base + encodeURIComponent(uid) + "/";
+    const base = game === "hsr" ? "https://enka.network/api/hsr/uid/" : "https://enka.network/api/uid/";
+    const url = base + encodeURIComponent(uid);
 
     const r = await fetch(url, { headers: { "User-Agent": "Chatbot/1.0" }, cache: "no-store" });
     if (!r.ok) return NextResponse.json({ ok: false, error: "fetch_failed", status: r.status }, { status: 502 });
