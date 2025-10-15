@@ -1,10 +1,10 @@
-/* src/app/api/enka/route.ts
-   ดึงโปรไฟล์จาก enka.network (GI/HSR) + คืนตัวละคร, ของ/เรลิก, อาวุธ, ค่ารวม
+/* src/app/api/enka-gi/route.ts
+   ดึงโปรไฟล์จาก enka.network (GI) + คืนตัวละคร, ของ/เรลิก, อาวุธ, ค่ารวม
    — ไม่มี implicit any — */
 import { NextRequest, NextResponse } from "next/server";
 import giMap from "@/data/gi_characters.json"; // map id -> ชื่อจริง
 
-type GameKey = "gi" | "hsr";
+type GameKey = "gi";
 
 /* ---------- helper: ชื่อจริงจาก json ---------- */
 function giName(id?: number, fallback?: string): string {
@@ -357,7 +357,7 @@ export async function POST(req: NextRequest) {
     const { game = "gi", uid } = (await req.json().catch(() => ({}))) as { game?: GameKey; uid?: string };
     if (!uid) return NextResponse.json({ ok: false, error: "missing_uid" }, { status: 400 });
 
-    const base = game === "hsr" ? "https://enka.network/api/hsr/uid/" : "https://enka.network/api/uid/";
+    const base = "https://enka.network/api/uid/";
     const url = base + encodeURIComponent(uid);
 
     const r = await fetch(url, { headers: { "User-Agent": "Chatbot/1.0" }, cache: "no-store" });
