@@ -8,8 +8,10 @@ import { ocrWithFallback } from '@/lib/tess';
 /* ====================== Types ====================== */
 type GameKey = 'gi' | 'hsr';
 type QuickReply = { label: string; value: string };
+
 type ApiResponse = {
   reply?: string;
+  replyHtml?: string; // ✅ รองรับ HTML จาก backend
   quickReplies?: string[];
   paymentRequest?: any;
   sets?: {
@@ -17,6 +19,7 @@ type ApiResponse = {
     lines: { short: string; full: string; pieces: number }[][];
   };
 };
+
 type NluResp =
   | { intent: 'artifact_gi'; character?: string }
   | { intent: 'relic_hsr'; character?: string }
@@ -27,6 +30,7 @@ type NluResp =
 type ChatMessage = {
   role: 'user' | 'bot' | 'preview';
   text: string;
+  html?: string;        // ✅ เก็บ HTML
   imageUrl?: string;
   sets?: ApiResponse['sets'];
 };
@@ -230,35 +234,65 @@ function AdviceFromBackend({ sets }: { sets: NonNullable<ApiResponse['sets']> })
 }
 
 /* ====================== Sanitize & BotText ====================== */
+// ✅ อนุญาต <img> ที่เป็น https:// จากโดเมน fandom และแค่แท็กพื้นฐาน
+const IMG_WHITELIST = new Set([
+  'genshin-impact.fandom.com',
+  'honkai-star-rail.fandom.com',
+]);
+
 function sanitizeBotHtml(src: string) {
   let s = src || '';
+
+  // ตัด script/style ทั้งบล็อก
   s = s.replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\1\s*>/gi, '');
-  s = s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  s = s.replace(/&lt;br\s*\/?&gt;/gi, '<br/>');
-  s = s.replace(/&lt;(\/?)(b|strong|i|em|u)&gt;/gi, '<$1$2>');
-  s = s.replace(/&lt;img([^&]*)&gt;/gi, (_m, attrs) => {
+
+  // ลบ on* event ทั้งหมด
+  s = s.replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*')/gi, '');
+
+  // ปลอดภัยกับ <a> — href เฉพาะ http(s), ใส่ rel, target
+  s = s.replace(/<a([^>]*)>([\s\S]*?)<\/a>/gi, (_m, attrs, inner) => {
+    const href = /href\s*=\s*"(.*?)"/i.exec(attrs)?.[1] || '';
+    if (!/^https?:\/\//i.test(href)) return inner;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
+  });
+
+  // แปลง <img> ให้เหลือเฉพาะ src,width,height,alt และตรวจโดเมน
+  s = s.replace(/<img([^>]*?)>/gi, (_m, attrs) => {
     const get = (name: string, def = '') => {
       const re = new RegExp(`${name}\\s*=\\s*"(.*?)"`, 'i');
-      const m = String(attrs).match(re);
-      return m ? m[1] : def;
+      return re.exec(attrs)?.[1] ?? def;
     };
-    const srcAttr = get('src');
-    if (!srcAttr || !/^\/pic\//.test(srcAttr)) return '';
+    const srcUrl = get('src');
+    if (!/^https?:\/\//i.test(srcUrl)) return '';
+    try {
+      const u = new URL(srcUrl);
+      if (!IMG_WHITELIST.has(u.hostname)) return ''; // ไม่ใช่โดเมนที่อนุญาต
+    } catch {
+      return '';
+    }
     const alt = get('alt', '');
-    const w = get('width', '20');
-    const h = get('height', '20');
-    return `<img src="${srcAttr}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
+    const w = get('width', '30');
+    const h = get('height', '30');
+    return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
   });
+
   return s;
 }
 
-function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
+// ให้เว้นวรรคหลัง ":" 1 ช่องในโหมดข้อความ (หลีกเลี่ยง URL)
+function fixColonSpace(line: string) {
+  // ข้ามบรรทัดที่เป็น URL ทั้งบรรทัด
+  if (/^https?:\/\//i.test(line.trim())) return line;
+  return line.replace(/:\s*/g, ': ');
+}
+
+function BotText({ text, html, sets }: { text: string; html?: string; sets?: ApiResponse['sets'] }) {
   const tidyHead = (s: string) => s.replace(/^\s*Ruby\s*:\s*/i, '');
   const lines = (text || '').split(/\r?\n/);
   const body = lines.slice(1).join('\n');
 
-  // ✅ ปรับให้จับทุกเคส: ทั้งแท็กจริง "<...>" และอักษรที่ถูก encode "&lt;...&gt;"
-  const containsHtml = /<|&lt;/.test(body);
+  const hasHtmlPayload = !!html;
+  const containsHtmlInBody = /<|&lt;/.test(body);
 
   return (
     <div className="inline-block max-w-[44rem]">
@@ -278,7 +312,12 @@ function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
 
         {sets ? (
           <AdviceFromBackend sets={sets} />
-        ) : containsHtml ? (
+        ) : hasHtmlPayload ? (
+          <div
+            className="space-y-1 text-gray-100"
+            dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(html!) }}
+          />
+        ) : containsHtmlInBody ? (
           <div
             className="space-y-1 text-gray-100"
             dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(body) }}
@@ -286,7 +325,7 @@ function BotText({ text, sets }: { text: string; sets?: ApiResponse['sets'] }) {
         ) : (
           lines.length > 1 && (
             <div className="space-y-1 text-gray-100">
-              {lines.slice(1).map((ln, i) => (<div key={i}>{ln}</div>))}
+              {lines.slice(1).map((ln, i) => (<div key={i}>{fixColonSpace(ln)}</div>))}
             </div>
           )
         )}
@@ -464,15 +503,16 @@ export default function Page() {
     !!t && /ขอโทษค่ะ.*ไม่เข้าใจ|กรุณาระบุใหม่|i don't understand|unknown/i.test(t);
 
   const pushBot = (data: ApiResponse) => {
-    if (!data.reply) return;
+    if (!data.reply && !data.replyHtml) return;
     const reply = data.reply || '';
+    const html = data.replyHtml; // ✅ รับ html
 
     const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
     const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
 
     setMessages((p) => [
       ...p,
-      { role: 'bot', text: reply, imageUrl: enforcedQR, sets: data.sets } as ChatMessage,
+      { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets } as ChatMessage,
     ]);
 
     setShowPaidButton(!!enforcedQR);
@@ -920,7 +960,7 @@ export default function Page() {
                   ) : (
                     <div className="flex justify-start">
                       <div className="max-w-[85%]">
-                        <BotText text={msg.text} sets={msg.sets} />
+                        <BotText text={msg.text} html={msg.html} sets={msg.sets} />
                         {msg.imageUrl && (
                           <Image
                             src={msg.imageUrl}
