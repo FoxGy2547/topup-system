@@ -11,7 +11,7 @@ type QuickReply = { label: string; value: string };
 
 type ApiResponse = {
   reply?: string;
-  replyHtml?: string; // ✅ รองรับ HTML จาก backend
+  // replyHtml ถูกยุบ: backend ส่ง HTML ใน reply โดยตรงแล้ว
   quickReplies?: string[];
   paymentRequest?: any;
   sets?: {
@@ -30,7 +30,7 @@ type NluResp =
 type ChatMessage = {
   role: 'user' | 'bot' | 'preview';
   text: string;
-  html?: string;        // ✅ เก็บ HTML
+  html?: string;        // ✅ เก็บ HTML (มาจาก reply ถ้าเป็น HTML)
   imageUrl?: string;
   sets?: ApiResponse['sets'];
 };
@@ -55,6 +55,10 @@ const splitlines = (s: string) =>
     .split(/\r?\n/)
     .map((x) => x.replace(/[ \t\f\v]+/g, ' ').trim())
     .filter(Boolean);
+
+// ตรวจว่าดูเหมือน HTML มั้ย (ใช้เฉพาะกับ payload จาก backend)
+const looksLikeHtml = (s?: string) =>
+  !!s && /<\s*(?:div|span|img|ul|li|b|i|strong|br|a)\b|<\/\s*[a-z]/i.test(s);
 
 /* ====================== API helpers ====================== */
 async function callAPI(userMessage: string, username?: string): Promise<ApiResponse> {
@@ -154,7 +158,7 @@ const glassIndigo =
 const glassGreen =
   'bg-emerald-500/25 hover:bg-emerald-500/35 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(5,150,105,.35)],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
 const glassRed =
-  'bg-rose-500/30 hover:bg-rose-500/40 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(225,29,72,.35)],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
+  'bg-rose-500/30 hover:bg-rose-500/40 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35)],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
 const glassGray =
   'bg-white/10 hover:bg-white/15 text-white backdrop-blur-md ring-1 ring-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,.35),0_10px_30px_rgba(0,0,0,.25)],hover:scale-105 hover:shadow-[0_6px_16px_rgba(0,0,0,0.6)]';
 const bubbleUser =
@@ -234,8 +238,8 @@ function AdviceFromBackend({ sets }: { sets: NonNullable<ApiResponse['sets']> })
 }
 
 /* ====================== Sanitize & BotText ====================== */
-// ✅ อนุญาต <img> ที่เป็น https:// จากโดเมน fandom และแค่แท็กพื้นฐาน
-const IMG_WHITELIST = new Set([
+// ✅ ปล่อย <img src="/pic/..."> (local path) และ http(s) โดเมนเดียวกับแอป + โดเมน fandom ที่เคยใช้
+const EXTRA_IMG_HOST_WHITELIST = new Set([
   'genshin-impact.fandom.com',
   'honkai-star-rail.fandom.com',
 ]);
@@ -249,31 +253,56 @@ function sanitizeBotHtml(src: string) {
   // ลบ on* event ทั้งหมด
   s = s.replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*')/gi, '');
 
-  // ปลอดภัยกับ <a> — href เฉพาะ http(s), ใส่ rel, target
+  // ปลอดภัยกับ <a> — href เฉพาะ http(s) และ relative path, ใส่ rel, target
   s = s.replace(/<a([^>]*)>([\s\S]*?)<\/a>/gi, (_m, attrs, inner) => {
     const href = /href\s*=\s*"(.*?)"/i.exec(attrs)?.[1] || '';
-    if (!/^https?:\/\//i.test(href)) return inner;
-    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
+    if (!href) return inner;
+    if (/^https?:\/\//i.test(href)) {
+      try {
+        const u = new URL(href);
+        const sameHost = typeof window !== 'undefined' && u.hostname === window.location.hostname;
+        if (sameHost || EXTRA_IMG_HOST_WHITELIST.has(u.hostname)) {
+          return `<a href="${href}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
+        }
+      } catch {}
+      return inner;
+    }
+    // allow relative
+    if (href.startsWith('/')) {
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
+    }
+    return inner;
   });
 
-  // แปลง <img> ให้เหลือเฉพาะ src,width,height,alt และตรวจโดเมน
+  // แปลง <img> ให้เหลือเฉพาะ src,width,height,alt และตรวจโดเมน/พาธ
   s = s.replace(/<img([^>]*?)>/gi, (_m, attrs) => {
     const get = (name: string, def = '') => {
       const re = new RegExp(`${name}\\s*=\\s*"(.*?)"`, 'i');
       return re.exec(attrs)?.[1] ?? def;
     };
     const srcUrl = get('src');
-    if (!/^https?:\/\//i.test(srcUrl)) return '';
-    try {
-      const u = new URL(srcUrl);
-      if (!IMG_WHITELIST.has(u.hostname)) return ''; // ไม่ใช่โดเมนที่อนุญาต
-    } catch {
-      return '';
+    if (!srcUrl) return '';
+    // ✅ อนุญาต path ภายในโปรเจกต์ เช่น /pic/...
+    if (srcUrl.startsWith('/pic/')) {
+      const alt = get('alt', '');
+      const w = get('width', '30');
+      const h = get('height', '30');
+      return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
     }
-    const alt = get('alt', '');
-    const w = get('width', '30');
-    const h = get('height', '30');
-    return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
+    // อนุญาต http(s) โดเมนเดียวกัน และ fandom whitelist
+    if (/^https?:\/\//i.test(srcUrl)) {
+      try {
+        const u = new URL(srcUrl);
+        const sameHost = typeof window !== 'undefined' && u.hostname === window.location.hostname;
+        if (sameHost || EXTRA_IMG_HOST_WHITELIST.has(u.hostname)) {
+          const alt = get('alt', '');
+          const w = get('width', '30');
+          const h = get('height', '30');
+          return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
+        }
+      } catch {}
+    }
+    return ''; // ไม่ผ่านเกณฑ์
   });
 
   return s;
@@ -281,7 +310,6 @@ function sanitizeBotHtml(src: string) {
 
 // ให้เว้นวรรคหลัง ":" 1 ช่องในโหมดข้อความ (หลีกเลี่ยง URL)
 function fixColonSpace(line: string) {
-  // ข้ามบรรทัดที่เป็น URL ทั้งบรรทัด
   if (/^https?:\/\//i.test(line.trim())) return line;
   return line.replace(/:\s*/g, ': ');
 }
@@ -339,7 +367,8 @@ function stripPriceSuffix(s: string) {
   return s.replace(/\s*-\s*[\d,]+(?:\.\d{2})?\s*(?:บาท|฿|THB)?\s*$/i, '').trim();
 }
 function buildMenuMap(reply: string): Record<number, string> {
-  const lines = reply.split(/\r?\n/);
+  const textOnly = reply.replace(/<[^>]+>/g, ' '); // กันกรณี reply เป็น HTML
+  const lines = textOnly.split(/\r?\n/);
   let cur: number | null = null;
   const acc: Record<number, string[]> = {};
   for (const raw of lines) {
@@ -503,9 +532,11 @@ export default function Page() {
     !!t && /ขอโทษค่ะ.*ไม่เข้าใจ|กรุณาระบุใหม่|i don't understand|unknown/i.test(t);
 
   const pushBot = (data: ApiResponse) => {
-    if (!data.reply && !data.replyHtml) return;
+    if (!data.reply) return;
     const reply = data.reply || '';
-    const html = data.replyHtml; // ✅ รับ html
+
+    // ✅ ถ้า reply เป็น HTML ให้ใส่ลง field html ด้วย
+    const html = looksLikeHtml(reply) ? reply : undefined;
 
     const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
     const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
@@ -531,45 +562,51 @@ export default function Page() {
       setConfirmMode(false);
     }
 
-    // ตรวจเมนูตัวเลข
-    let minSel = 1;
-    let maxSel = 0;
-    const rangeMatch = reply.match(/หมายเลข\s*(\d+)\s*-\s*(\d+)/i);
-    if (rangeMatch) {
-      minSel = parseInt(rangeMatch[1], 10);
-      maxSel = parseInt(rangeMatch[2], 10);
-    }
-    const menu = buildMenuMap(reply);
-    const keys = Object.keys(menu).map((k) => parseInt(k, 10)).filter((x) => !isNaN(x));
-    if (keys.length) {
-      if (!maxSel) {
-        maxSel = Math.max(...keys);
-        minSel = Math.min(...keys);
+    // ตรวจเมนูตัวเลข (ข้ามถ้า reply เป็น HTML)
+    if (!html) {
+      let minSel = 1;
+      let maxSel = 0;
+      const rangeMatch = reply.match(/หมายเลข\s*(\d+)\s*-\s*(\d+)/i);
+      if (rangeMatch) {
+        minSel = parseInt(rangeMatch[1], 10);
+        maxSel = parseInt(rangeMatch[2], 10);
       }
-      setMenuMap(menu);
-      const label = /\bแพ็กเกจ|package/i.test(reply) ? 'แพ็กเกจ' : 'ตัวเลือก';
-      setPendingNumberRange({ min: minSel, max: maxSel, label });
+      const menu = buildMenuMap(reply);
+      const keys = Object.keys(menu).map((k) => parseInt(k, 10)).filter((x) => !isNaN(x));
+      if (keys.length) {
+        if (!maxSel) {
+          maxSel = Math.max(...keys);
+          minSel = Math.min(...keys);
+        }
+        setMenuMap(menu);
+        const label = /\bแพ็กเกจ|package/i.test(reply) ? 'แพ็กเกจ' : 'ตัวเลือก';
+        setPendingNumberRange({ min: minSel, max: maxSel, label });
 
-      if (!Array.isArray(data.quickReplies) || data.quickReplies.length === 0) {
-        const buttons = [];
-        for (let i = minSel; i <= maxSel && buttons.length < 10; i++) buttons.push(String(i));
-        setDynamicQR(buttons);
+        if (!Array.isArray(data.quickReplies) || data.quickReplies.length === 0) {
+          const buttons = [];
+          for (let i = minSel; i <= maxSel && buttons.length < 10; i++) buttons.push(String(i));
+          setDynamicQR(buttons);
+        }
+      } else {
+        setPendingNumberRange(null);
+        setMenuMap({});
+      }
+
+      // ตรวจ state รอ UID (เฉพาะข้อความธรรมดา)
+      if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
+        setAwaitingUID(true);
+        setPendingNumberRange(null);
+        setMenuMap({});
+        setDynamicQR([]);
+        return;
+      }
+      if (/สรุปรายการ|กรุณากดยืนยัน|ยอดชำระ|รับคำยืนยันแล้ว/i.test(reply)) {
+        setAwaitingUID(false);
       }
     } else {
+      // เป็น HTML: ไม่ใช่ขั้นเมนู/UID
       setPendingNumberRange(null);
       setMenuMap({});
-    }
-
-    // ตรวจ state รอ UID
-    if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
-      setAwaitingUID(true);
-      setPendingNumberRange(null);
-      setMenuMap({});
-      setDynamicQR([]);
-      return;
-    }
-    if (/สรุปรายการ|กรุณากดยืนยัน|ยอดชำระ|รับคำยืนยันแล้ว/i.test(reply)) {
-      setAwaitingUID(false);
     }
   };
 

@@ -161,33 +161,7 @@ function normalizeColons(s?: string) {
   return String(s ?? "").replace(/\s*:\s*/g, ": ");
 }
 
-/* ========== Render (TEXT) ========== */
-function renderGearText(list: AnyGear[], game: GameKey): string {
-  if (!Array.isArray(list) || list.length === 0) return "(ไม่พบชิ้นส่วน)";
-  const filtered = list.filter((g) =>
-    game === "gi" ? (ORDER_GI as readonly string[]).includes(g.piece) : (ORDER_HSR as readonly string[]).includes(keyizeHSR(g.piece))
-  );
-  const sorted = [...filtered].sort((a, b) => {
-    if (game === "gi") {
-      return (ORDER_GI as readonly string[]).indexOf(a.piece) - (ORDER_GI as readonly string[]).indexOf(b.piece);
-    }
-    return (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(a.piece)) - (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(b.piece));
-  });
-
-  const blocks: string[] = [];
-  for (const g of sorted) {
-    const url = iconPath(game, g.piece);
-    const pieceLabel = displayPiece(game, g.piece);
-    const first = `•  ${url} ${pieceLabel}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
-    const main = `main: ${normalizeColons(g.main) || "-"}`;
-    const subsHead = `subs:`;
-    const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
-    blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
-  }
-  return blocks.join("\n\n");
-}
-
-/* ========== Render (HTML พร้อม <img src="/pic/...">) ========== */
+/* ========== Render (HTML พร้อม <img src="/pic/..."> ใน reply เดียว) ========== */
 function escapeHtml(s: string) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -680,22 +654,16 @@ UID: ${uid}
     const listForShow =
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : d?.relics || []) as AnyGear[];
 
-    // สร้างทั้ง text และ html (เผื่อ client ฝั่งหน้าไม่รองรับ html)
-    const gearText = renderGearText(listForShow, game);
+    // ✅ ใช้ HTML ใน reply โดยตรง (ไม่มี replyHtml แล้ว)
     const gearHtml = renderGearHTML(listForShow, game);
-
     const shownName = d?.name || target.name || `#${target.id}`;
-    const headText = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
-    const recHeadText = `Artifact/Relic ที่ฐานข้อมูลแนะนำ:`;
+    const headHtml = `<div><b>ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})</b></div>`;
+    const recHeadHtml = `<div style="margin-top:8px"><b>Artifact/Relic ที่ฐานข้อมูลแนะนำ:</b></div>`;
     const askText = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
-
-    const headHtml = `<div><b>${headText}</b></div>`;
-    const recHeadHtml = `<div style="margin-top:8px"><b>${recHeadText}</b></div>`;
     const htmlPayload = `${headHtml}${gearHtml}${recHeadHtml}${recSetsHtml}<div style="margin-top:8px">${escapeHtml(askText)}</div>`;
 
     return NextResponse.json({
-      reply: `${headText}\n${gearText}\n\n${recHeadText}\n(ดูที่แสดงผลแบบรูปด้านบน)\n\n${askText}`,
-      replyHtml: htmlPayload,
+      reply: htmlPayload, // <<-- ใช้ตัวนี้ตัวเดียว
       quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
     });
   }
@@ -829,7 +797,7 @@ function simpleFallbackAdvice(
   const cr = totals?.cr ?? (shown?.cr != null ? shown.cr * 100 : 0);
   const cd = totals?.cd ?? (shown?.cd != null ? shown.cd * 100 : 0);
   const erShown = shown?.er != null ? shown.er * 100 : undefined;
-  const er = totals?.er != null ? totals.er + 100 : erShown ?? 0;
+  const er = totals?.er != null ? totals?.er + 100 : erShown ?? 0;
 
   const target = { cr: 70, cd: 140, er: 120 };
 
