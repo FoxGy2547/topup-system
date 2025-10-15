@@ -101,8 +101,8 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
   return n - 1;
 }
 
-/* ===================== ไอคอน + เรนเดอร์แบบ "ลิงก์รูปนำหน้า" ===================== */
-/* ลิงก์รูปตามที่สั่ง (GI) + ลำดับการเรียง */
+/* ===================== Icons & Ordering ===================== */
+/* GI */
 const ICON_URLS_GI: Record<string, string> = {
   Flower:  "https://genshin-impact.fandom.com/wiki/File:Icon_Flower_of_Life.png",
   Plume:   "https://genshin-impact.fandom.com/wiki/File:Icon_Plume_of_Death.png",
@@ -112,7 +112,7 @@ const ICON_URLS_GI: Record<string, string> = {
 };
 const ORDER_GI = ["Flower", "Plume", "Sands", "Goblet", "Circlet"];
 
-/* ลิงก์รูปตามที่สั่ง (HSR) + ลำดับการเรียง */
+/* HSR */
 const ICON_URLS_HSR: Record<string, string> = {
   HEAD:           "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Body.png",
   HANDS:          "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Hands.png",
@@ -123,6 +123,7 @@ const ICON_URLS_HSR: Record<string, string> = {
 };
 const ORDER_HSR = ["HEAD", "HANDS", "BODY", "FEET", "PLANAR_SPHERE", "LINK_ROPE"];
 
+/* ===================== Pretty Printers ===================== */
 type AnyGear = {
   piece: string;
   name: string;
@@ -132,61 +133,96 @@ type AnyGear = {
   level?: number;
 };
 
-/* แปลงชื่อชิ้น HSR ให้เป็นคีย์มาตรฐาน (HEAD/HANDS/...) */
+/* แปลงชื่อ HSR ให้เป็นคีย์มาตรฐาน */
 function keyizeHSR(piece: string) {
   return piece.replace(/\s+/g, "_").replace(/-/g, "_").toUpperCase();
 }
 
-/* จัดรูปโคลอนให้เว้น 1 วรรคเสมอ (ลบช่องว่างซ้าย/ขวา แล้วใส่ ": ") */
+/* จัดโคลอนให้เว้น 1 วรรคเสมอ */
 function normalizeColons(s?: string) {
   return String(s ?? "").replace(/\s*:\s*/g, ": ");
 }
 
-/* === เรนเดอร์แพทเทิร์นแบบที่ต้องการ ===
-ตัวอย่าง GI:
-•  https://.../Icon_Flower_of_Life.png Flower [+20]
-main: HP: 4780
-subs:
-- Energy Recharge%: 16.8
-- CRIT DMG%: 15.5
-- DEF: 23
-- CRIT Rate%: 9.7
-*/
+/* ——— Plain text renderer (มีลิงก์เป็นข้อความ) ——— */
 function renderGearLinksPattern(list: AnyGear[], game: GameKey): string {
   if (!Array.isArray(list) || list.length === 0) return "(ไม่พบชิ้นส่วน)";
 
-  // กรองเฉพาะชิ้น + เรียงตามที่กำหนด (ตัด Weapon ออกกรณี GI)
   const filtered = list.filter((g) =>
     game === "gi" ? ORDER_GI.includes(g.piece) : ORDER_HSR.includes(keyizeHSR(g.piece))
   );
 
   const sorted = [...filtered].sort((a, b) => {
-    if (game === "gi") {
-      return ORDER_GI.indexOf(a.piece) - ORDER_GI.indexOf(b.piece);
-    }
+    if (game === "gi") return ORDER_GI.indexOf(a.piece) - ORDER_GI.indexOf(b.piece);
     return ORDER_HSR.indexOf(keyizeHSR(a.piece)) - ORDER_HSR.indexOf(keyizeHSR(b.piece));
   });
 
   const blocks: string[] = [];
   for (const g of sorted) {
-    if (game === "gi") {
-      const url = ICON_URLS_GI[g.piece] || "";
-      const first = `•  ${url} ${g.piece}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
-      const main = `main: ${normalizeColons(g.main) || "-"}`;
-      const subsHead = `subs:`;
-      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
-      blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
-    } else {
-      const key = keyizeHSR(g.piece);
-      const url = ICON_URLS_HSR[key] || "";
-      const first = `•  ${url} ${key}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
-      const main = `main: ${normalizeColons(g.main) || "-"}`;
-      const subsHead = `subs:`;
-      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
-      blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
-    }
+    const key = game === "gi" ? g.piece : keyizeHSR(g.piece);
+    const url = game === "gi" ? (ICON_URLS_GI[key] || "") : (ICON_URLS_HSR[key] || "");
+    const first = `•  ${url} ${key}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
+    const main = `main: ${normalizeColons(g.main) || "-"}`;
+    const subsHead = `subs:`;
+    const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
+    blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
   }
   return blocks.join("\n\n");
+}
+
+/* ——— HTML renderer (โชว์รูป 30x30px) ——— */
+function escapeHtml(s: string) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderGearLinksHTML(list: AnyGear[], game: GameKey): string {
+  if (!Array.isArray(list) || list.length === 0) return "<p>(ไม่พบชิ้นส่วน)</p>";
+
+  const filtered = list.filter((g) =>
+    game === "gi" ? ORDER_GI.includes(g.piece) : ORDER_HSR.includes(keyizeHSR(g.piece))
+  );
+
+  const sorted = [...filtered].sort((a, b) => {
+    if (game === "gi") return ORDER_GI.indexOf(a.piece) - ORDER_GI.indexOf(b.piece);
+    return ORDER_HSR.indexOf(keyizeHSR(a.piece)) - ORDER_HSR.indexOf(keyizeHSR(b.piece));
+  });
+
+  const items = sorted
+    .map((g) => {
+      const key = game === "gi" ? g.piece : keyizeHSR(g.piece);
+      const url = game === "gi" ? (ICON_URLS_GI[key] || "") : (ICON_URLS_HSR[key] || "");
+      const title = `${escapeHtml(key)}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
+      const main = normalizeColons(g.main || "-");
+      const subs =
+        g.subs && g.subs.length
+          ? `<ul style="margin:4px 0 0 18px;padding:0">
+               ${g.subs
+                 .map(
+                   (s) =>
+                     `<li style="margin:0;list-style:disc">${escapeHtml(normalizeColons(s))}</li>`
+                 )
+                 .join("")}
+             </ul>`
+          : "";
+
+      return `
+<li style="margin:10px 0 14px 0">
+  <div>
+    <img src="${url}" width="30" height="30" style="vertical-align:middle;margin-right:6px" />
+    <a href="${url}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">${title}</a>
+  </div>
+  <div style="margin-top:4px">main: ${escapeHtml(main)}</div>
+  <div>subs:</div>
+  ${subs}
+</li>`;
+    })
+    .join("");
+
+  return `<ul style="margin:8px 0 0 18px;padding:0">${items}</ul>`;
 }
 
 /* ===================== Data helpers ===================== */
@@ -283,7 +319,9 @@ function sessionsReset(s: Session) {
 
 /* ===================== Route ===================== */
 export async function POST(req: Request) {
-  const { message, username, sessionId } = (await req.json().catch(() => ({}))) as {
+  const { message, username, sessionId } = (await req
+    .json()
+    .catch(() => ({}))) as {
     message?: string;
     username?: string;
     sessionId?: string;
@@ -308,7 +346,10 @@ export async function POST(req: Request) {
     const intent = detectIntent(text);
     if (intent === "cancel") {
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     if (intent === "gi_topup" || intent === "hsr_topup") {
       const game: GameKey = intent === "gi_topup" ? "gi" : "hsr";
@@ -330,10 +371,13 @@ ${renderProductList(list)}
       s.state = "waiting_enka_uid";
       s.enka = { game: intent === "artifact_uid" ? "gi" : "hsr" };
       return NextResponse.json({
-        reply: `กรุณาพิมพ์ UID ${s.enka.game === "gi" ? "Genshin" : "Star Rail"} ของคุณ (ตัวเลขเท่านั้น)`,
+        reply: `กรุณาพิมพ์ UID ${
+          s.enka.game === "gi" ? "Genshin" : "Star Rail"
+        } ของคุณ (ตัวเลขเท่านั้น)`,
         ...onlyCancel(),
       });
     }
+    // help / unknown
     return NextResponse.json(mainMenu());
   }
 
@@ -342,10 +386,16 @@ ${renderProductList(list)}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const game: GameKey = s.state === "waiting_gi" ? "gi" : "hsr";
-    const list = s.productList && s.productList.length > 0 ? s.productList : await fetchProducts(game);
+    const list =
+      s.productList && s.productList.length > 0
+        ? s.productList
+        : await fetchProducts(game);
 
     let idx: number | null = pickIndexFromMessage(text, list.length);
     if (idx == null) {
@@ -380,7 +430,10 @@ ${renderProductList(list)}
     s.state = game === "gi" ? "waiting_uid_gi" : "waiting_uid_hsr";
     s.productList = undefined;
 
-    return NextResponse.json({ reply: "กรุณาพิมพ์ UID ของคุณ (ตัวเลขเท่านั้น)", ...onlyCancel() });
+    return NextResponse.json({
+      reply: "กรุณาพิมพ์ UID ของคุณ (ตัวเลขเท่านั้น)",
+      ...onlyCancel(),
+    });
   }
 
   /* ---------- Waiting UID (Topup) ---------- */
@@ -388,11 +441,17 @@ ${renderProductList(list)}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const uidOnly = toArabic(text).replace(/\D/g, "");
     if (!uidOnly) {
-      return NextResponse.json({ reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ", ...onlyCancel() });
+      return NextResponse.json({
+        reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ",
+        ...onlyCancel(),
+      });
     }
     s.uid = uidOnly;
 
@@ -412,7 +471,10 @@ UID: ${uidOnly}
 ราคา: ${price.toFixed(2)} บาท
 
 กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก`;
-    return NextResponse.json({ reply, quickReplies: ["ยืนยัน", "ยกเลิก"] });
+    return NextResponse.json({
+      reply,
+      quickReplies: ["ยืนยัน", "ยกเลิก"],
+    });
   }
 
   /* ---------- Confirm order ---------- */
@@ -430,14 +492,24 @@ UID: ${uidOnly}
 UID: ${uid}
 
 กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ`;
-      return NextResponse.json({ reply, quickReplies: [], paymentRequest: { showQR: true } });
+      return NextResponse.json({
+        reply,
+        quickReplies: [],
+        paymentRequest: { showQR: true },
+      });
     }
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
-    return NextResponse.json({ reply: "กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก", quickReplies: ["ยืนยัน", "ยกเลิก"] });
+    return NextResponse.json({
+      reply: "กรุณากดยืนยันเพื่อดำเนินการต่อ หรือยกเลิก",
+      quickReplies: ["ยืนยัน", "ยกเลิก"],
+    });
   }
 
   /* ---------- Artifact/Relic (ผ่าน UID Enka) ---------- */
@@ -445,11 +517,17 @@ UID: ${uid}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     const uid = toArabic(text).replace(/\D/g, "");
     if (!uid)
-      return NextResponse.json({ reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ", ...onlyCancel() });
+      return NextResponse.json({
+        reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ",
+        ...onlyCancel(),
+      });
 
     s.enka = s.enka || {};
     s.enka.uid = uid;
@@ -457,7 +535,8 @@ UID: ${uid}
     const game = s.enka.game || "gi";
     try {
       const base = new URL(req.url).origin;
-      const enkaUrl = game === "hsr" ? `${base}/api/enka-hsr` : `${base}/api/enka-gi`;
+      const enkaUrl =
+        game === "hsr" ? `${base}/api/enka-hsr` : `${base}/api/enka-gi`;
 
       const r = await fetch(enkaUrl, {
         method: "POST",
@@ -470,20 +549,26 @@ UID: ${uid}
         s.state = "idle";
         const menu = mainMenu();
         return NextResponse.json({
-          reply: "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
+          reply:
+            "ดึงข้อมูลจาก enka ไม่สำเร็จ ลองใหม่หรือเช็คว่าโปรไฟล์เปิดสาธารณะนะคะ",
           quickReplies: menu.quickReplies,
         });
       }
       s.state = "waiting_pick_character";
       s.enka.player = j.player as string;
-      s.enka.characters = j.characters as { id: number; name: string; level: number }[];
+      s.enka.characters = j.characters as {
+        id: number;
+        name: string;
+        level: number;
+      }[];
       s.enka.details = j.details as Record<string, any>;
 
       const chips = (s.enka.characters || [])
         .slice(0, 12)
         .map((c) => {
           const fromDetail = s.enka?.details?.[String(c.id)];
-          const showName: string = (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
+          const showName: string =
+            (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
           return `${showName} (lv.${c.level})`;
         });
 
@@ -496,7 +581,10 @@ UID: ${uid}
     } catch {
       s.state = "idle";
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ดึงข้อมูลจาก enka ไม่สำเร็จค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
   }
 
@@ -505,14 +593,20 @@ UID: ${uid}
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
 
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
     const game = (s.enka?.game || "gi") as GameKey;
 
-    const idMatch = game === "hsr" ? text.match(/\b#?(\d{3,6})\b/) : text.match(/\b#?(\d{5,9})\b/);
+    const idMatch =
+      game === "hsr"
+        ? text.match(/\b#?(\d{3,6})\b/)
+        : text.match(/\b#?(\d{5,9})\b/);
 
     let target: { id: number; name: string; level: number } | null = null;
 
@@ -523,10 +617,15 @@ UID: ${uid}
     if (!target) {
       target =
         chars.find((c) => {
-          const nameFromDetail = details[String(c.id)]?.name as string | undefined;
+          const nameFromDetail = details[String(c.id)]?.name as
+            | string
+            | undefined;
           const nm = (nameFromDetail || c.name || "").trim();
           if (!nm) return false;
-          const re = new RegExp(`\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
+          const re = new RegExp(
+            `\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`,
+            "i"
+          );
           return re.test(text);
         }) || null;
     }
@@ -537,7 +636,8 @@ UID: ${uid}
         return `${nm} (lv.${c.level})`;
       });
       return NextResponse.json({
-        reply: "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
+        reply:
+          "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
         quickReplies: [...chips, "ยกเลิก"],
       });
     }
@@ -639,10 +739,14 @@ UID: ${uid}
 
     // เลือก list ที่จะแสดง (GI = artifacts, HSR = relics)
     const listForShow =
-      (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : d?.relics || []) as AnyGear[];
+      (Array.isArray(d?.artifacts) && d!.artifacts!.length
+        ? d!.artifacts!
+        : (d?.relics || [])) as AnyGear[];
 
-    // ใช้ renderer ใหม่แบบลิงก์นำหน้า
+    // เวอร์ชันข้อความล้วน (ลิงก์เป็น text)
     const gearText = renderGearLinksPattern(listForShow, game);
+    // เวอร์ชัน HTML มีรูป 30x30
+    const gearHtml = renderGearLinksHTML(listForShow, game);
 
     const shownName = d?.name || target.name || `#${target.id}`;
     const head = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
@@ -657,6 +761,16 @@ ${recHead}
 ${recSets}
 
 ${ask}`,
+      // ⬇️ เพิ่ม HTML สำหรับฝั่ง UI ที่รองรับ
+      replyHtml: `
+        <div>
+          <div style="margin-bottom:10px">${escapeHtml(head)}</div>
+          ${gearHtml}
+          <div style="margin-top:14px">${escapeHtml(recHead)}</div>
+          <div style="margin-top:6px;line-height:1.2">${recSets}</div>
+          <div style="margin-top:12px">${escapeHtml(ask)}</div>
+        </div>
+      `,
       quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
     });
   }
@@ -666,11 +780,15 @@ ${ask}`,
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
       const menu = mainMenu();
-      return NextResponse.json({ reply: "ยกเลิกแล้วค่ะ", quickReplies: menu.quickReplies });
+      return NextResponse.json({
+        reply: "ยกเลิกแล้วค่ะ",
+        quickReplies: menu.quickReplies,
+      });
     }
     if (!RE_ANALYZE.test(text)) {
       return NextResponse.json({
-        reply: "หากต้องการให้ช่วยประเมินสเตต กด “วิเคราะห์สเตตด้วย Gemini” หรือพิมพ์วิเคราะห์ได้เลยนะคะ",
+        reply:
+          "หากต้องการให้ช่วยประเมินสเตต กด “วิเคราะห์สเตตด้วย Gemini” หรือพิมพ์วิเคราะห์ได้เลยนะคะ",
         quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
       });
     }
@@ -732,7 +850,11 @@ ${ask}`,
         game === "gi"
           ? simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals)
           : simpleFallbackAdviceHSR(d?.shownTotals);
-      const reason = s.lastAdviceError ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})` : r.ok ? "" : `\n(HTTP ${r.status})`;
+      const reason = s.lastAdviceError
+        ? `\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})`
+        : r.ok
+        ? ""
+        : `\n(HTTP ${r.status})`;
       return NextResponse.json({
         reply: `${thinking}\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}${reason}`,
         quickReplies: ["ยกเลิก"],
@@ -740,7 +862,9 @@ ${ask}`,
     } catch (e) {
       s.lastAdviceError = (e as Error)?.message || "unknown_error";
       const fb =
-        (s.enka?.game || "gi") === "gi" ? simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals) : simpleFallbackAdviceHSR(d?.shownTotals);
+        (s.enka?.game || "gi") === "gi"
+          ? simpleFallbackAdvice(d?.totalsFromGear, d?.shownTotals)
+          : simpleFallbackAdviceHSR(d?.shownTotals);
       return NextResponse.json({
         reply: `⌛ กำลังคำนวณคำแนะนำ…\n\n📊 ผลวิเคราะห์ (โหมดสำรอง) สำหรับ ${d.name}:\n${fb}\n(สาเหตุเข้าโหมดสำรอง: ${s.lastAdviceError})`,
         quickReplies: ["ยกเลิก"],
@@ -769,7 +893,8 @@ ${ask}`,
       : "ดำเนินการ";
 
   return NextResponse.json({
-    reply: `เรากำลังอยู่ที่ขั้น “${step}” อยู่เลยนะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลย~`,
+    reply:
+      `เรากำลังอยู่ที่ขั้น “${step}” อยู่เลยนะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลย~`,
     ...onlyCancel(),
   });
 }
