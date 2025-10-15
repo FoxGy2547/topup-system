@@ -101,6 +101,40 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
   return n - 1;
 }
 
+/* ===== pretty printer สำหรับรายการของสวมใส่ (อ่านง่าย แยกบรรทัด) ===== */
+type AnyGear = {
+  piece: string;
+  name: string;
+  set?: string;
+  main: string;
+  subs?: string[];
+  level?: number;
+};
+function renderGearPretty(list: AnyGear[]): string {
+  if (!Array.isArray(list) || list.length === 0) return "(ไม่พบชิ้นส่วน)";
+
+  // แบ่งบรรทัดพร้อมย่อหน้า 2 ช่อง + bullet ย่อย
+  const blocks: string[] = [];
+  for (const g of list) {
+    const title =
+      `• ${g.piece}: ${g.name || "-"}${g.set ? ` (${g.set})` : ""}${
+        typeof g.level === "number" ? `  [+${g.level}]` : ""
+      }`;
+    const main = `  main: ${g.main || "-"}`;
+
+    let subs = "";
+    if (g.subs && g.subs.length) {
+      const subLines = g.subs.map((s) => `  - ${s}`).join("\n");
+      subs = `\n${subLines}`;
+      // ใส่หัวข้อย่อย "subs:" แยกบรรทัดให้ชัด
+      subs = `  subs:${subs}`;
+    }
+    blocks.push(`${title}\n${main}${subs}`);
+  }
+  // บล็อคแต่ละชิ้นคั่นด้วยบรรทัดว่าง
+  return blocks.join("\n\n");
+}
+
 /* ===================== Data helpers ===================== */
 async function fetchProducts(game: GameKey) {
   const [rows] = await db.query<RowDataPacket[]>(
@@ -596,17 +630,12 @@ UID: ${uid}
     s.enka = s.enka || {};
     s.enka.selectedId = target.id;
 
-    // แสดงของที่สวมใส่ (รองรับทั้ง GI artifacts และ HSR relics)
+    // เลือก list ที่จะแสดง (GI = artifacts, HSR = relics)
     const listForShow =
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : (d?.relics || []));
 
-    const gearLines =
-      (listForShow || [])
-        .map((a: any) => {
-          const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
-          return `• ${a.piece}: ${a.name}${a.set ? ` (${a.set})` : ""} | main=${a.main}${subs}`;
-        })
-        .join("\n") || "(ไม่พบชิ้นส่วน)";
+    // ✨ ใช้ pretty printer ใหม่
+    const gearText = renderGearPretty(listForShow as AnyGear[]);
 
     const shownName = d?.name || target.name || `#${target.id}`;
     const head = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
@@ -615,7 +644,7 @@ UID: ${uid}
 
     return NextResponse.json({
       reply: `${head}
-${gearLines}
+${gearText}
 
 ${recHead}
 ${recSets}
@@ -661,7 +690,6 @@ ${ask}`,
       const base = new URL(req.url).origin;
       const thinking = `⌛ กำลังคำนวณคำแนะนำ…`;
 
-      // เรียก endpoint เดียว /api/advice รองรับทั้ง GI/HSR
       const body =
         game === "gi"
           ? {
