@@ -101,7 +101,34 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
   return n - 1;
 }
 
-/* ===== pretty printer สำหรับรายการของสวมใส่ (อ่านง่าย แยกบรรทัด) ===== */
+/* ===================== Icons & Renderers ===================== */
+/* ----- icon maps (ตามลิงก์ที่ให้) ----- */
+const ICONS_GI: Record<string, string> = {
+  Flower: "https://genshin-impact.fandom.com/wiki/File:Icon_Flower_of_Life.png",
+  Plume: "https://genshin-impact.fandom.com/wiki/File:Icon_Plume_of_Death.png",
+  Sands: "https://genshin-impact.fandom.com/wiki/File:Icon_Sands_of_Eon.png",
+  Goblet: "https://genshin-impact.fandom.com/wiki/File:Icon_Goblet_of_Eonothem.png",
+  Circlet: "https://genshin-impact.fandom.com/wiki/File:Icon_Circlet_of_Logos.png",
+};
+const ORDER_GI = ["Flower", "Plume", "Sands", "Goblet", "Circlet"];
+
+const ICONS_HSR: Record<string, string> = {
+  HEAD: "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Body.png",
+  HANDS: "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Hands.png",
+  BODY: "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Body.png",
+  FEET: "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Feet.png",
+  PLANAR_SPHERE: "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Planar_Sphere.png",
+  LINK_ROPE: "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Link_Rope.png",
+};
+const ORDER_HSR = ["HEAD", "HANDS", "BODY", "FEET", "PLANAR_SPHERE", "LINK_ROPE"];
+const IMG_TAG = (src: string, alt: string) =>
+  `<img src="${src}" width="30" height="30" alt="${alt}" style="vertical-align:middle;margin-right:6px" />`;
+
+function keyizeHSR(piece: string): string {
+  return piece.replace(/\s+/g, "_").replace(/-/g, "_").toUpperCase();
+}
+
+/* ===== pretty printer พร้อมรูปไอคอน (แยกบรรทัด) ===== */
 type AnyGear = {
   piece: string;
   name: string;
@@ -110,28 +137,44 @@ type AnyGear = {
   subs?: string[];
   level?: number;
 };
-function renderGearPretty(list: AnyGear[]): string {
+
+function renderGearPrettyWithIcons(list: AnyGear[], game: GameKey): string {
   if (!Array.isArray(list) || list.length === 0) return "(ไม่พบชิ้นส่วน)";
 
-  // แบ่งบรรทัดพร้อมย่อหน้า 2 ช่อง + bullet ย่อย
-  const blocks: string[] = [];
-  for (const g of list) {
-    const title =
-      `• ${g.piece}: ${g.name || "-"}${g.set ? ` (${g.set})` : ""}${
-        typeof g.level === "number" ? `  [+${g.level}]` : ""
-      }`;
-    const main = `  main: ${g.main || "-"}`;
-
-    let subs = "";
-    if (g.subs && g.subs.length) {
-      const subLines = g.subs.map((s) => `  - ${s}`).join("\n");
-      subs = `\n${subLines}`;
-      // ใส่หัวข้อย่อย "subs:" แยกบรรทัดให้ชัด
-      subs = `  subs:${subs}`;
+  // sort ตามลำดับที่ต้องการ
+  const sorted = [...list].sort((a, b) => {
+    if (game === "gi") {
+      return ORDER_GI.indexOf(a.piece) - ORDER_GI.indexOf(b.piece);
+    } else {
+      const ka = ORDER_HSR.indexOf(keyizeHSR(a.piece));
+      const kb = ORDER_HSR.indexOf(keyizeHSR(b.piece));
+      return ka - kb;
     }
-    blocks.push(`${title}\n${main}${subs}`);
+  });
+
+  const blocks: string[] = [];
+  for (const g of sorted) {
+    if (game === "gi") {
+      const icon = ICONS_GI[g.piece] || "";
+      const img = icon ? IMG_TAG(icon, g.piece) : "#P";
+      const title = `• ${img} ${g.piece}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
+      const main = `  main: ${g.main || "-"}`;
+      const subs = g.subs?.length
+        ? `  subs:\n${g.subs.map((s) => `  - ${s}`).join("\n")}`
+        : `  subs:`;
+      blocks.push(`${title}\n${main}\n${subs}`);
+    } else {
+      const key = keyizeHSR(g.piece);
+      const icon = ICONS_HSR[key] || "";
+      const img = icon ? IMG_TAG(icon, key) : "#P";
+      const title = `• ${img} ${key}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
+      const main = `  main: ${g.main || "-"}`;
+      const subs = g.subs?.length
+        ? `  subs:\n${g.subs.map((s) => `  - ${s}`).join("\n")}`
+        : `  subs:`;
+      blocks.push(`${title}\n${main}\n${subs}`);
+    }
   }
-  // บล็อคแต่ละชิ้นคั่นด้วยบรรทัดว่าง
   return blocks.join("\n\n");
 }
 
@@ -296,7 +339,6 @@ ${renderProductList(list)}
         ...onlyCancel(),
       });
     }
-    // help / unknown
     return NextResponse.json(mainMenu());
   }
 
@@ -519,7 +561,7 @@ UID: ${uid}
 
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
-    const game = s.enka?.game || "gi";
+    const game = (s.enka?.game || "gi") as GameKey;
 
     const idMatch =
       game === "hsr"
@@ -611,7 +653,7 @@ UID: ${uid}
       if (!combo) return "";
       const codes = combo.split("/").map(s => s.trim()).filter(Boolean);
       if (codes.length === 0) return "";
-      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ใช้โฟลเดอร์เดิม
+      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi";
       const imgs = codes.map(c =>
         `<img src="/pic/${folder}/${c}.png" alt="${c}" width="50" height="50" style="vertical-align:middle;margin-right:6px" />`
       ).join("");
@@ -634,8 +676,8 @@ UID: ${uid}
     const listForShow =
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : (d?.relics || []));
 
-    // ✨ ใช้ pretty printer ใหม่
-    const gearText = renderGearPretty(listForShow as AnyGear[]);
+    // ใช้ pretty printer แบบมีไอคอน + เรียงลำดับ
+    const gearText = renderGearPrettyWithIcons(listForShow as AnyGear[], game);
 
     const shownName = d?.name || target.name || `#${target.id}`;
     const head = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
