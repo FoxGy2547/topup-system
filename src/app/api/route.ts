@@ -102,22 +102,14 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
 }
 
 /* ===================== Icons & Ordering ===================== */
-/* GI */
-const ORDER_GI = ["Flower", "Plume", "Sands", "Goblet", "Circlet"];
+/* GI & HSR: ใช้รูปหมวดชิ้น (cate) จาก public
+   GI:  /public/pic/gi/cate/{Piece}.png       → /pic/gi/cate/Flower.png
+   HSR: /public/pic/hsr/cate/{Words_Case}.png → /pic/hsr/cate/Planar_Sphere.png
+   และแสดงชื่อชิ้นด้วยตัวใหญ่เฉพาะตัวแรกของแต่ละคำ (Title Case) */
 
-/* HSR */
-const ORDER_HSR = ["HEAD", "HANDS", "BODY", "FEET", "PLANAR_SPHERE", "LINK_ROPE"];
+const ORDER_GI = ["Flower", "Plume", "Sands", "Goblet", "Circlet"] as const;
+const ORDER_HSR = ["HEAD", "HANDS", "BODY", "FEET", "PLANAR_SPHERE", "LINK_ROPE"] as const;
 
-type AnyGear = {
-  piece: string;
-  name: string;
-  set?: string;
-  main: string;
-  subs?: string[];
-  level?: number;
-};
-
-/* ---------- ช่วยจัดรูปแบบชื่อชิ้น + พาธรูป local ---------- */
 const GI_CATE_BASE = "/pic/gi/cate/";
 const HSR_CATE_BASE = "/pic/hsr/cate/";
 
@@ -130,61 +122,72 @@ function titleCaseWords(s: string) {
     .map(capFirst)
     .join(" ");
 }
-/** แปลง HEAD / Planar_Sphere / Planar Sphere → HEAD/PLANAR_SPHERE (คีย์เทียบ ORDER_HSR) */
+
+/* แปลงชื่อชิ้น HSR ให้เป็นคีย์มาตรฐาน (HEAD/HANDS/...) */
 function keyizeHSR(piece: string) {
   return piece.replace(/\s+/g, "_").replace(/-/g, "_").toUpperCase();
 }
-/** แปลงชื่อสำหรับแสดงผล: ตัวแรกใหญ่ของแต่ละคำ */
+
+/** ชื่อไว้แสดง: GI = Flower/Plume/... ; HSR = Planar Sphere/Link Rope/... */
 function displayPiece(game: GameKey, rawPiece: string) {
   if (game === "gi") {
-    // GI: Flower/Plume/Sands/Goblet/Circlet
+    // GI เป็นคำเดี่ยวอยู่แล้ว
     return titleCaseWords(String(rawPiece).replace(/_/g, " "));
   }
-  // HSR: HEAD → Head, PLANAR_SPHERE → Planar Sphere, LINK_ROPE → Link Rope
+  // HSR: HEAD → Head, PLANAR_SPHERE → Planar Sphere
   const words = keyizeHSR(rawPiece).split("_").map(capFirst);
   return words.join(" ");
 }
-/** พาธรูปใน cate/ ตามโฟลเดอร์เกม */
+
+/** สร้าง path รูป cate/ ตามกติกา */
 function iconPath(game: GameKey, rawPiece: string) {
   if (game === "gi") {
-    // GI: Flower.png / Plume.png ...
-    const name = displayPiece("gi", rawPiece).replace(/\s+/g, ""); // ปกติเป็นคำเดียว
+    // Flower → Flower.png
+    const name = displayPiece("gi", rawPiece).replace(/\s+/g, "");
     return `${GI_CATE_BASE}${name}.png`;
   }
-  // HSR: ใช้รูปแบบ Word_Case_With_Underscore.png เช่น Planar_Sphere.png
+  // HSR: Planar Sphere → Planar_Sphere.png
   const words = keyizeHSR(rawPiece).split("_").map(capFirst);
   const name = words.join("_");
   return `${HSR_CATE_BASE}${name}.png`;
 }
+
+type AnyGear = {
+  piece: string;
+  name: string;
+  set?: string;
+  main: string;
+  subs?: string[];
+  level?: number;
+};
 
 /* จัดรูปโคลอนให้เว้น 1 วรรคเสมอ (ลบช่องว่างซ้าย/ขวา แล้วใส่ ": ") */
 function normalizeColons(s?: string) {
   return String(s ?? "").replace(/\s*:\s*/g, ": ");
 }
 
-/* === เรนเดอร์แพทเทิร์นแบบที่ต้องการ (ใช้รูป local + ปรับชื่อชิ้น Title Case) ===
+/* === เรนเดอร์แพทเทิร์นแบบที่ต้องการ (ใช้ local path + ชื่อชิ้น Title Case) ===
 ตัวอย่าง GI:
 •  /pic/gi/cate/Flower.png Flower [+20]
 main: HP: 4780
 subs:
 - Energy Recharge%: 16.8
 - CRIT DMG%: 15.5
-- DEF: 23
-- CRIT Rate%: 9.7
+...
 */
 function renderGearLinksPattern(list: AnyGear[], game: GameKey): string {
   if (!Array.isArray(list) || list.length === 0) return "(ไม่พบชิ้นส่วน)";
 
   // กรองเฉพาะชิ้น + เรียงตามที่กำหนด (ตัด Weapon ออกกรณี GI)
   const filtered = list.filter((g) =>
-    game === "gi" ? ORDER_GI.includes(g.piece) : ORDER_HSR.includes(keyizeHSR(g.piece))
+    game === "gi" ? (ORDER_GI as readonly string[]).includes(g.piece) : (ORDER_HSR as readonly string[]).includes(keyizeHSR(g.piece))
   );
 
   const sorted = [...filtered].sort((a, b) => {
     if (game === "gi") {
-      return ORDER_GI.indexOf(a.piece) - ORDER_GI.indexOf(b.piece);
+      return (ORDER_GI as readonly string[]).indexOf(a.piece) - (ORDER_GI as readonly string[]).indexOf(b.piece);
     }
-    return ORDER_HSR.indexOf(keyizeHSR(a.piece)) - ORDER_HSR.indexOf(keyizeHSR(b.piece));
+    return (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(a.piece)) - (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(b.piece));
   });
 
   const blocks: string[] = [];
@@ -403,7 +406,7 @@ ${renderProductList(list)}
     }
     const uidOnly = toArabic(text).replace(/\D/g, "");
     if (!uidOnly) {
-      return NextResponse.json({ reply: "กรุณาพิมพ์ UID เป็นตัวเลขเท่านั้นค่ะ", ...onlyCancel() });
+      return NextResponse.json({ reply: "กรุณาพิม์ UID เป็นตัวเลขเท่านั้นค่ะ", ...onlyCancel() });
     }
     s.uid = uidOnly;
 
@@ -626,7 +629,7 @@ UID: ${uid}
       if (!combo) return "";
       const codes = combo.split("/").map((s) => s.trim()).filter(Boolean);
       if (codes.length === 0) return "";
-      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ใช้โฟลเดอร์เดิม (ถ้าจะแยก hsr ภายหลังเปลี่ยนตรงนี้)
+      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "hsr"; // ✅ ใช้โฟลเดอร์ให้ถูกเกม
       const imgs = codes
         .map(
           (c) =>
@@ -652,7 +655,7 @@ UID: ${uid}
     const listForShow =
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : d?.relics || []) as AnyGear[];
 
-    // ใช้ renderer ใหม่แบบลิงก์รูป local
+    // ✅ ใช้ renderer ใหม่ (local icon path + Title Case)
     const gearText = renderGearLinksPattern(listForShow, game);
 
     const shownName = d?.name || target.name || `#${target.id}`;
