@@ -104,22 +104,22 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
 /* ===================== ไอคอน + เรนเดอร์ (ข้อความ/HTML) ===================== */
 /* ลิงก์รูปตามที่สั่ง (GI) + ลำดับการเรียง */
 const ICON_URLS_GI: Record<string, string> = {
-  Flower:  "https://genshin-impact.fandom.com/wiki/File:Icon_Flower_of_Life.png",
-  Plume:   "https://genshin-impact.fandom.com/wiki/File:Icon_Plume_of_Death.png",
-  Sands:   "https://genshin-impact.fandom.com/wiki/File:Icon_Sands_of_Eon.png",
-  Goblet:  "https://genshin-impact.fandom.com/wiki/File:Icon_Goblet_of_Eonothem.png",
-  Circlet: "https://genshin-impact.fandom.com/wiki/File:Icon_Circlet_of_Logos.png",
+  Flower:  "https://static.wikia.nocookie.net/gensin-impact/images/2/2d/Icon_Flower_of_Life.png/revision/latest?cb=20210712005358",
+  Plume:   "https://static.wikia.nocookie.net/gensin-impact/images/8/8b/Icon_Plume_of_Death.png/revision/latest?cb=20210712005411",
+  Sands:   "https://static.wikia.nocookie.net/gensin-impact/images/9/9f/Icon_Sands_of_Eon.png/revision/latest?cb=20210713185616",
+  Goblet:  "https://static.wikia.nocookie.net/gensin-impact/images/3/37/Icon_Goblet_of_Eonothem.png/revision/latest?cb=20210713185527",
+  Circlet: "https://static.wikia.nocookie.net/gensin-impact/images/6/64/Icon_Circlet_of_Logos.png/revision/latest?cb=20210712005353",
 };
 const ORDER_GI = ["Flower", "Plume", "Sands", "Goblet", "Circlet"];
 
 /* ลิงก์รูปตามที่สั่ง (HSR) + ลำดับการเรียง */
 const ICON_URLS_HSR: Record<string, string> = {
-  HEAD:           "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Body.png",
-  HANDS:          "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Hands.png",
-  BODY:           "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Body.png",
-  FEET:           "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Feet.png",
-  PLANAR_SPHERE:  "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Planar_Sphere.png",
-  LINK_ROPE:      "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Link_Rope.png",
+  HEAD:           "https://static.wikia.nocookie.net/houkai-star-rail/images/6/62/Relic_Piece_Head.png/revision/latest?cb=20230522083909",
+  HANDS:          "https://static.wikia.nocookie.net/houkai-star-rail/images/5/53/Relic_Piece_Hands.png/revision/latest?cb=20240314003113",
+  BODY:           "https://static.wikia.nocookie.net/houkai-star-rail/images/6/6a/Relic_Piece_Body.png/revision/latest?cb=20230522083904",
+  FEET:           "https://static.wikia.nocookie.net/houkai-star-rail/images/c/c6/Relic_Piece_Feet.png/revision/latest?cb=20230522083905",
+  PLANAR_SPHERE:  "https://static.wikia.nocookie.net/houkai-star-rail/images/2/24/Relic_Piece_Planar_Sphere.png/revision/latest?cb=20230522083913",
+  LINK_ROPE:      "https://static.wikia.nocookie.net/houkai-star-rail/images/d/d1/Relic_Piece_Link_Rope.png/revision/latest?cb=20230522083911",
 };
 const ORDER_HSR = ["HEAD", "HANDS", "BODY", "FEET", "PLANAR_SPHERE", "LINK_ROPE"];
 
