@@ -583,7 +583,7 @@ export default function Page() {
         setPendingNumberRange({ min: minSel, max: maxSel, label });
 
         if (!Array.isArray(data.quickReplies) || data.quickReplies.length === 0) {
-          const buttons = [];
+          const buttons: string[] = [];
           for (let i = minSel; i <= maxSel && buttons.length < 10; i++) buttons.push(String(i));
           setDynamicQR(buttons);
         }
