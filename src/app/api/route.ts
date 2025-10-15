@@ -101,11 +101,10 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
   return n - 1;
 }
 
-/* ===================== Icons & Ordering ===================== */
-/* GI & HSR: ใช้รูปหมวดชิ้น (cate) จาก public
-   GI:  /public/pic/gi/cate/{Piece}.png       → /pic/gi/cate/Flower.png
-   HSR: /public/pic/hsr/cate/{Words_Case}.png → /pic/hsr/cate/Planar_Sphere.png
-   และแสดงชื่อชิ้นด้วยตัวใหญ่เฉพาะตัวแรกของแต่ละคำ (Title Case) */
+/* ===================== Icons & Ordering (LOCAL PATH) ===================== */
+/* GI:  /pic/gi/cate/{Piece}.png          → Flower.png, Plume.png ...
+   HSR: /pic/hsr/cate/{Word_Case}.png     → Planar_Sphere.png, Link_Rope.png ...
+   และแสดงชื่อชิ้นแบบ Title Case (ตัวแรกใหญ่ของแต่ละคำ) */
 
 const ORDER_GI = ["Flower", "Plume", "Sands", "Goblet", "Circlet"] as const;
 const ORDER_HSR = ["HEAD", "HANDS", "BODY", "FEET", "PLANAR_SPHERE", "LINK_ROPE"] as const;
@@ -128,25 +127,21 @@ function keyizeHSR(piece: string) {
   return piece.replace(/\s+/g, "_").replace(/-/g, "_").toUpperCase();
 }
 
-/** ชื่อไว้แสดง: GI = Flower/Plume/... ; HSR = Planar Sphere/Link Rope/... */
+/** ชื่อไว้แสดงผล: GI = Flower/Plume/... ; HSR = Planar Sphere/Link Rope/... */
 function displayPiece(game: GameKey, rawPiece: string) {
   if (game === "gi") {
-    // GI เป็นคำเดี่ยวอยู่แล้ว
     return titleCaseWords(String(rawPiece).replace(/_/g, " "));
   }
-  // HSR: HEAD → Head, PLANAR_SPHERE → Planar Sphere
   const words = keyizeHSR(rawPiece).split("_").map(capFirst);
   return words.join(" ");
 }
 
-/** สร้าง path รูป cate/ ตามกติกา */
+/** path รูป cate/ */
 function iconPath(game: GameKey, rawPiece: string) {
   if (game === "gi") {
-    // Flower → Flower.png
     const name = displayPiece("gi", rawPiece).replace(/\s+/g, "");
     return `${GI_CATE_BASE}${name}.png`;
   }
-  // HSR: Planar Sphere → Planar_Sphere.png
   const words = keyizeHSR(rawPiece).split("_").map(capFirst);
   const name = words.join("_");
   return `${HSR_CATE_BASE}${name}.png`;
@@ -161,28 +156,17 @@ type AnyGear = {
   level?: number;
 };
 
-/* จัดรูปโคลอนให้เว้น 1 วรรคเสมอ (ลบช่องว่างซ้าย/ขวา แล้วใส่ ": ") */
+/* ฟอร์แมตโคลอน */
 function normalizeColons(s?: string) {
   return String(s ?? "").replace(/\s*:\s*/g, ": ");
 }
 
-/* === เรนเดอร์แพทเทิร์นแบบที่ต้องการ (ใช้ local path + ชื่อชิ้น Title Case) ===
-ตัวอย่าง GI:
-•  /pic/gi/cate/Flower.png Flower [+20]
-main: HP: 4780
-subs:
-- Energy Recharge%: 16.8
-- CRIT DMG%: 15.5
-...
-*/
-function renderGearLinksPattern(list: AnyGear[], game: GameKey): string {
+/* ========== Render (TEXT) ========== */
+function renderGearText(list: AnyGear[], game: GameKey): string {
   if (!Array.isArray(list) || list.length === 0) return "(ไม่พบชิ้นส่วน)";
-
-  // กรองเฉพาะชิ้น + เรียงตามที่กำหนด (ตัด Weapon ออกกรณี GI)
   const filtered = list.filter((g) =>
     game === "gi" ? (ORDER_GI as readonly string[]).includes(g.piece) : (ORDER_HSR as readonly string[]).includes(keyizeHSR(g.piece))
   );
-
   const sorted = [...filtered].sort((a, b) => {
     if (game === "gi") {
       return (ORDER_GI as readonly string[]).indexOf(a.piece) - (ORDER_GI as readonly string[]).indexOf(b.piece);
@@ -201,6 +185,51 @@ function renderGearLinksPattern(list: AnyGear[], game: GameKey): string {
     blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
   }
   return blocks.join("\n\n");
+}
+
+/* ========== Render (HTML พร้อม <img src="/pic/...">) ========== */
+function escapeHtml(s: string) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+function renderGearHTML(list: AnyGear[], game: GameKey): string {
+  if (!Array.isArray(list) || list.length === 0) return "<i>(ไม่พบชิ้นส่วน)</i>";
+
+  const filtered = list.filter((g) =>
+    game === "gi" ? (ORDER_GI as readonly string[]).includes(g.piece) : (ORDER_HSR as readonly string[]).includes(keyizeHSR(g.piece))
+  );
+  const sorted = [...filtered].sort((a, b) => {
+    if (game === "gi") {
+      return (ORDER_GI as readonly string[]).indexOf(a.piece) - (ORDER_GI as readonly string[]).indexOf(b.piece);
+    }
+    return (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(a.piece)) - (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(b.piece));
+  });
+
+  const blocks: string[] = [];
+  for (const g of sorted) {
+    const src = iconPath(game, g.piece);
+    const piece = escapeHtml(displayPiece(game, g.piece));
+    const level = typeof g.level === "number" ? ` [+${g.level}]` : "";
+    const main = escapeHtml(normalizeColons(g.main) || "-");
+    const subs =
+      g.subs?.length
+        ? `<ul style="margin:0;padding-left:1.2em">${g.subs.map((s) => `<li>${escapeHtml(normalizeColons(s))}</li>`).join("")}</ul>`
+        : "";
+
+    blocks.push(
+      [
+        `<div style="margin:0 0 10px 0">`,
+        `<img src="${src}" alt="${piece}" width="28" height="28" />`,
+        ` <b>${piece}${level}</b><br/>`,
+        `main: ${main}<br/>`,
+        `subs:<br/>${subs}`,
+        `</div>`,
+      ].join("")
+    );
+  }
+  return blocks.join("");
 }
 
 /* ===================== Data helpers ===================== */
@@ -602,7 +631,7 @@ UID: ${uid}
       }>;
     };
 
-    /* ==== ดึง “ชุดที่แนะนำ” จาก DB ==== */
+    /* ==== “ชุดที่แนะนำ” จาก DB ==== */
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -625,27 +654,23 @@ UID: ${uid}
       setRows = [];
     }
 
-    function shortToIcons(combo: string): string {
+    function shortToIconsHTML(combo: string): string {
       if (!combo) return "";
       const codes = combo.split("/").map((s) => s.trim()).filter(Boolean);
       if (codes.length === 0) return "";
-      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "hsr"; // ✅ ใช้โฟลเดอร์ให้ถูกเกม
-      const imgs = codes
-        .map(
-          (c) =>
-            `<img src="/pic/${folder}/${c}.png" alt="${c}" width="50" height="50" style="vertical-align:middle;margin-right:6px" />`
-        )
+      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "hsr";
+      return codes
+        .map((c) => `<img src="/pic/${folder}/${c}.png" alt="${c}" width="50" height="50" />`)
         .join("");
-      return imgs;
     }
 
-    const recLines: string[] = [];
+    const recLinesHtml: string[] = [];
     for (const r of setRows) {
       const combo = String((r as any).set_short || "");
-      const icons = shortToIcons(combo);
-      if (icons) recLines.push(`• ${icons}`);
+      const icons = shortToIconsHTML(combo);
+      if (icons) recLinesHtml.push(`<div>• ${icons}</div>`);
     }
-    const recSets = recLines.join("\n") || "• (ไม่พบข้อมูลในฐานข้อมูล)";
+    const recSetsHtml = recLinesHtml.join("") || `<div>• (ไม่พบข้อมูลในฐานข้อมูล)</div>`;
 
     s.state = "picked_character";
     s.enka = s.enka || {};
@@ -655,22 +680,22 @@ UID: ${uid}
     const listForShow =
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : d?.relics || []) as AnyGear[];
 
-    // ✅ ใช้ renderer ใหม่ (local icon path + Title Case)
-    const gearText = renderGearLinksPattern(listForShow, game);
+    // สร้างทั้ง text และ html (เผื่อ client ฝั่งหน้าไม่รองรับ html)
+    const gearText = renderGearText(listForShow, game);
+    const gearHtml = renderGearHTML(listForShow, game);
 
     const shownName = d?.name || target.name || `#${target.id}`;
-    const head = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
-    const recHead = `Artifact/Relic ที่ฐานข้อมูลแนะนำ:`;
-    const ask = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
+    const headText = `ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})`;
+    const recHeadText = `Artifact/Relic ที่ฐานข้อมูลแนะนำ:`;
+    const askText = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
+
+    const headHtml = `<div><b>${headText}</b></div>`;
+    const recHeadHtml = `<div style="margin-top:8px"><b>${recHeadText}</b></div>`;
+    const htmlPayload = `${headHtml}${gearHtml}${recHeadHtml}${recSetsHtml}<div style="margin-top:8px">${escapeHtml(askText)}</div>`;
 
     return NextResponse.json({
-      reply: `${head}
-${gearText}
-
-${recHead}
-${recSets}
-
-${ask}`,
+      reply: `${headText}\n${gearText}\n\n${recHeadText}\n(ดูที่แสดงผลแบบรูปด้านบน)\n\n${askText}`,
+      replyHtml: htmlPayload,
       quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
     });
   }
