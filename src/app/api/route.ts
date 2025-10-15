@@ -397,7 +397,7 @@ UID: ${uid}
     });
   }
 
-  /* ---------- Artifact/Relic (ผ่าน UID Enka เท่านั้น) ---------- */
+  /* ---------- Artifact/Relic (ผ่าน UID Enka) ---------- */
   if (s.state === "waiting_enka_uid") {
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
@@ -420,34 +420,15 @@ UID: ${uid}
     const game = s.enka.game || "gi";
     try {
       const base = new URL(req.url).origin;
+      // 🔧 แยก endpoint ตามเกม
+      const enkaUrl = game === "hsr" ? `${base}/api/enka-hsr` : `${base}/api/enka-gi`;
 
-      // ลอง endpoint แบบแยกก่อน แล้วค่อย fallback ไป /api/enka (ของเก่า)
-      const primary =
-        game === "gi" ? `${base}/api/enka-gi` : `${base}/api/enka-hsr`;
-      const fallback = `${base}/api/enka`;
-
-      async function tryFetchEnka() {
-        // 1) แบบแยก (ส่ง { uid })
-        try {
-          const r1 = await fetch(primary, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ uid }),
-          });
-          if (r1.ok) return await r1.json();
-          // ถ้า 404/405/500 ให้ลองตัวถัดไป
-        } catch { /* noop */ }
-
-        // 2) ของเก่า (ส่ง { game, uid })
-        const r2 = await fetch(fallback, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ game, uid }),
-        });
-        return await r2.json();
-      }
-
-      const j = await tryFetchEnka();
+      const r = await fetch(enkaUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid }),
+      });
+      const j = await r.json();
 
       if (!j?.ok) {
         s.state = "idle";
@@ -492,6 +473,7 @@ UID: ${uid}
     }
   }
 
+  /* ===================== เลือกตัวละคร (อัพเดต regex ให้รองรับ HSR) ===================== */
   if (s.state === "waiting_pick_character") {
     if (RE_CANCEL.test(text)) {
       sessionsReset(s);
@@ -504,8 +486,14 @@ UID: ${uid}
 
     const chars = s.enka?.characters || [];
     const details = s.enka?.details || {};
+    const game = s.enka?.game || "gi";
 
-    const idMatch = text.match(/#?(\d{6,})/);
+    // GI avatarId มัก 7–9 หลัก (เช่น 10000052), HSR ~ 3–6 หลัก → แยกตามเกม
+    const idMatch =
+      game === "hsr"
+        ? text.match(/\b#?(\d{3,6})\b/)
+        : text.match(/\b#?(\d{5,9})\b/);
+
     let target: { id: number; name: string; level: number } | null = null;
 
     if (idMatch) {
@@ -554,9 +542,17 @@ UID: ${uid}
         er?: number; cr?: number; cd?: number;
         pyro?: number; hydro?: number; cryo?: number; electro?: number; anemo?: number; geo?: number; dendro?: number; physical?: number;
       };
+      relics?: Array<{
+        piece: string;
+        name: string;
+        set?: string;
+        main: string;
+        subs: string[];
+        level?: number;
+      }>;
     };
 
-    /* ==== ดึง “ชุดที่แนะนำ” → แสดงเป็นไอคอนจาก public/pic/<game>/<short>.png ==== */
+    /* ==== ดึง “ชุดที่แนะนำ” จาก DB (ยังคงใช้ตารางเดิม) ==== */
     let setRows: RowDataPacket[] = [];
     try {
       const raw = d?.name || target.name || `#${target.id}`;
@@ -583,7 +579,7 @@ UID: ${uid}
       if (!combo) return "";
       const codes = combo.split("/").map(s => s.trim()).filter(Boolean);
       if (codes.length === 0) return "";
-      const folder = (s.enka?.game === "hsr") ? "hsr" : "gi";
+      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ยังใช้โฟลเดอร์เดิมที่คุณมี
       const imgs = codes.map(c =>
         `<img src="/pic/${folder}/${c}.png" alt="${c}" width="20" height="20" style="vertical-align:middle;margin-right:6px" />`
       ).join("");
@@ -598,15 +594,17 @@ UID: ${uid}
     }
     const recSets = recLines.join("\n") || "• (ไม่พบข้อมูลในฐานข้อมูล)";
 
-    /* ==== จบส่วนไอคอน ==== */
-
     s.state = "picked_character";
     s.enka = s.enka || {};
     s.enka.selectedId = target.id;
 
+    // แสดงของที่สวมใส่ (รองรับทั้ง GI artifacts และ HSR relics)
+    const listForShow =
+      (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : (d?.relics || []));
+
     const gearLines =
-      (d?.artifacts || [])
-        .map((a) => {
+      (listForShow || [])
+        .map((a: any) => {
           const subs = a.subs && a.subs.length ? ` | subs=${a.subs.join(", ")}` : "";
           return `• ${a.piece}: ${a.name}${a.set ? ` (${a.set})` : ""} | main=${a.main}${subs}`;
         })
