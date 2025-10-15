@@ -103,24 +103,9 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
 
 /* ===================== Icons & Ordering ===================== */
 /* GI */
-const ICON_URLS_GI: Record<string, string> = {
-  Flower:  "https://static.wikia.nocookie.net/gensin-impact/images/2/2d/Icon_Flower_of_Life.png/revision/latest?cb=20210712005358",
-  Plume:   "https://genshin-impact.fandom.com/wiki/File:Icon_Plume_of_Death.png",
-  Sands:   "https://genshin-impact.fandom.com/wiki/File:Icon_Sands_of_Eon.png",
-  Goblet:  "https://genshin-impact.fandom.com/wiki/File:Icon_Goblet_of_Eonothem.png",
-  Circlet: "https://genshin-impact.fandom.com/wiki/File:Icon_Circlet_of_Logos.png",
-};
 const ORDER_GI = ["Flower", "Plume", "Sands", "Goblet", "Circlet"];
 
 /* HSR */
-const ICON_URLS_HSR: Record<string, string> = {
-  HEAD:           "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Body.png",
-  HANDS:          "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Hands.png",
-  BODY:           "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Body.png",
-  FEET:           "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Feet.png",
-  PLANAR_SPHERE:  "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Planar_Sphere.png",
-  LINK_ROPE:      "https://honkai-star-rail.fandom.com/wiki/File:Relic_Piece_Link_Rope.png",
-};
 const ORDER_HSR = ["HEAD", "HANDS", "BODY", "FEET", "PLANAR_SPHERE", "LINK_ROPE"];
 
 type AnyGear = {
@@ -132,9 +117,44 @@ type AnyGear = {
   level?: number;
 };
 
-/* แปลงชื่อชิ้น HSR ให้เป็นคีย์มาตรฐาน (HEAD/HANDS/...) */
+/* ---------- ช่วยจัดรูปแบบชื่อชิ้น + พาธรูป local ---------- */
+const GI_CATE_BASE = "/pic/gi/cate/";
+const HSR_CATE_BASE = "/pic/hsr/cate/";
+
+function capFirst(s: string) {
+  return s ? s[0].toUpperCase() + s.slice(1).toLowerCase() : s;
+}
+function titleCaseWords(s: string) {
+  return s
+    .split(/\s+/)
+    .map(capFirst)
+    .join(" ");
+}
+/** แปลง HEAD / Planar_Sphere / Planar Sphere → HEAD/PLANAR_SPHERE (คีย์เทียบ ORDER_HSR) */
 function keyizeHSR(piece: string) {
   return piece.replace(/\s+/g, "_").replace(/-/g, "_").toUpperCase();
+}
+/** แปลงชื่อสำหรับแสดงผล: ตัวแรกใหญ่ของแต่ละคำ */
+function displayPiece(game: GameKey, rawPiece: string) {
+  if (game === "gi") {
+    // GI: Flower/Plume/Sands/Goblet/Circlet
+    return titleCaseWords(String(rawPiece).replace(/_/g, " "));
+  }
+  // HSR: HEAD → Head, PLANAR_SPHERE → Planar Sphere, LINK_ROPE → Link Rope
+  const words = keyizeHSR(rawPiece).split("_").map(capFirst);
+  return words.join(" ");
+}
+/** พาธรูปใน cate/ ตามโฟลเดอร์เกม */
+function iconPath(game: GameKey, rawPiece: string) {
+  if (game === "gi") {
+    // GI: Flower.png / Plume.png ...
+    const name = displayPiece("gi", rawPiece).replace(/\s+/g, ""); // ปกติเป็นคำเดียว
+    return `${GI_CATE_BASE}${name}.png`;
+  }
+  // HSR: ใช้รูปแบบ Word_Case_With_Underscore.png เช่น Planar_Sphere.png
+  const words = keyizeHSR(rawPiece).split("_").map(capFirst);
+  const name = words.join("_");
+  return `${HSR_CATE_BASE}${name}.png`;
 }
 
 /* จัดรูปโคลอนให้เว้น 1 วรรคเสมอ (ลบช่องว่างซ้าย/ขวา แล้วใส่ ": ") */
@@ -142,9 +162,9 @@ function normalizeColons(s?: string) {
   return String(s ?? "").replace(/\s*:\s*/g, ": ");
 }
 
-/* === เรนเดอร์แพทเทิร์นแบบที่ต้องการ ===
+/* === เรนเดอร์แพทเทิร์นแบบที่ต้องการ (ใช้รูป local + ปรับชื่อชิ้น Title Case) ===
 ตัวอย่าง GI:
-•  https://.../Icon_Flower_of_Life.png Flower [+20]
+•  /pic/gi/cate/Flower.png Flower [+20]
 main: HP: 4780
 subs:
 - Energy Recharge%: 16.8
@@ -169,22 +189,13 @@ function renderGearLinksPattern(list: AnyGear[], game: GameKey): string {
 
   const blocks: string[] = [];
   for (const g of sorted) {
-    if (game === "gi") {
-      const url = ICON_URLS_GI[g.piece] || "";
-      const first = `•  ${url} ${g.piece}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
-      const main = `main: ${normalizeColons(g.main) || "-"}`;
-      const subsHead = `subs:`;
-      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
-      blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
-    } else {
-      const key = keyizeHSR(g.piece);
-      const url = ICON_URLS_HSR[key] || "";
-      const first = `•  ${url} ${key}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
-      const main = `main: ${normalizeColons(g.main) || "-"}`;
-      const subsHead = `subs:`;
-      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
-      blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
-    }
+    const url = iconPath(game, g.piece);
+    const pieceLabel = displayPiece(game, g.piece);
+    const first = `•  ${url} ${pieceLabel}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
+    const main = `main: ${normalizeColons(g.main) || "-"}`;
+    const subsHead = `subs:`;
+    const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
+    blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
   }
   return blocks.join("\n\n");
 }
@@ -615,7 +626,7 @@ UID: ${uid}
       if (!combo) return "";
       const codes = combo.split("/").map((s) => s.trim()).filter(Boolean);
       if (codes.length === 0) return "";
-      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ใช้โฟลเดอร์เดิม
+      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ใช้โฟลเดอร์เดิม (ถ้าจะแยก hsr ภายหลังเปลี่ยนตรงนี้)
       const imgs = codes
         .map(
           (c) =>
@@ -641,7 +652,7 @@ UID: ${uid}
     const listForShow =
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : d?.relics || []) as AnyGear[];
 
-    // ใช้ renderer ใหม่แบบลิงก์นำหน้า
+    // ใช้ renderer ใหม่แบบลิงก์รูป local
     const gearText = renderGearLinksPattern(listForShow, game);
 
     const shownName = d?.name || target.name || `#${target.id}`;
