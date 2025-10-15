@@ -322,6 +322,9 @@ function BotText({ text, html, sets }: { text: string; html?: string; sets?: Api
   const hasHtmlPayload = !!html;
   const containsHtmlInBody = /<|&lt;/.test(body);
 
+  // ✅ ถ้าเป็น HTML ไม่ต้องแสดงหัวข้อความ (ไม่งั้นจะซ้ำ)
+  const headText = hasHtmlPayload || containsHtmlInBody ? '' : tidyHead(lines[0] || '');
+
   return (
     <div className="inline-block max-w-[44rem]">
       <div
@@ -335,21 +338,15 @@ function BotText({ text, html, sets }: { text: string; html?: string; sets?: Api
         <div className="mb-1 flex items-baseline gap-1">
           <span className="text-pink-300 font-semibold">Ruby</span>
           <span className="text-gray-300">:</span>
-          <span className="text-gray-100">{tidyHead(lines[0] || '')}</span>
+          {headText && <span className="text-gray-100">{headText}</span>}
         </div>
 
         {sets ? (
           <AdviceFromBackend sets={sets} />
         ) : hasHtmlPayload ? (
-          <div
-            className="space-y-1 text-gray-100"
-            dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(html!) }}
-          />
+          <div className="space-y-1 text-gray-100" dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(html!) }} />
         ) : containsHtmlInBody ? (
-          <div
-            className="space-y-1 text-gray-100"
-            dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(body) }}
-          />
+          <div className="space-y-1 text-gray-100" dangerouslySetInnerHTML={{ __html: sanitizeBotHtml(body) }} />
         ) : (
           lines.length > 1 && (
             <div className="space-y-1 text-gray-100">
