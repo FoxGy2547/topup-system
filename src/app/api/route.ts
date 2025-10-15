@@ -579,7 +579,7 @@ UID: ${uid}
       if (codes.length === 0) return "";
       const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "gi"; // ใช้โฟลเดอร์เดิม
       const imgs = codes.map(c =>
-        `<img src="/pic/${folder}/${c}.png" alt="${c}" width="50" height="20" style="vertical-align:middle;margin-right:6px" />`
+        `<img src="/pic/${folder}/${c}.png" alt="${c}" width="50" height="50" style="vertical-align:middle;margin-right:6px" />`
       ).join("");
       return imgs;
     }
