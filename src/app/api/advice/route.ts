@@ -36,6 +36,39 @@ type BodyHSR =
 
 type Body = BodyGI | BodyHSR;
 
+/* =============== Helpers =============== */
+// ล้าง Markdown ให้เป็นข้อความธรรมดาเท่านั้น
+function toPlain(text: string): string {
+  let out = String(text ?? "");
+
+  // normalize newlines
+  out = out.replace(/\r\n/g, "\n");
+
+  // strip bold/italic/underline/code
+  out = out.replace(/\*\*(.*?)\*\*/g, "$1");
+  out = out.replace(/__(.*?)__/g, "$1");
+  out = out.replace(/_(.*?)_/g, "$1");
+  out = out.replace(/`{1,3}([\s\S]*?)`{1,3}/g, "$1");
+
+  // strip headings and quotes
+  out = out.replace(/^\s{0,3}#{1,6}\s*/gm, "");
+  out = out.replace(/^\s{0,3}>\s?/gm, "");
+
+  // แปลง bullet ที่ขึ้นต้นด้วย *, -, • เป็น "- "
+  out = out.replace(/^\s*[\*\-•]\s+/gm, "- ");
+
+  // กำจัด ** ที่อาจเหลือ และ * ซ้อน
+  out = out.replace(/\*{2,}/g, "");
+  // ตัด * เดี่ยวๆ ที่คั่นคำแบบ markdown เหลือบ้าง
+  out = out.replace(/(^|\s)\*(\S[^*]*?)\*(?=\s|$)/g, "$1$2");
+
+  // เก็บกวาดช่องว่างปลายบรรทัด และบรรทัดว่างเกิน
+  out = out.replace(/[ \t]+$/gm, "");
+  out = out.replace(/\n{3,}/g, "\n\n");
+
+  return out.trim();
+}
+
 /* =============== Prompt =============== */
 function makePromptGI(b: BodyGI) {
   const charName = (b as any).character;
@@ -77,24 +110,24 @@ function makePromptGI(b: BodyGI) {
 
   lines.push("");
   lines.push("เกณฑ์การคำนวณ:");
-  lines.push("- ดึง/อ้างอิง “Base Lv.90 ของตัวละคร” (HP/ATK/DEF + Base CR 5%, Base CD 50%, Base ER 100%).");
-  lines.push("- ดึง/อ้างอิง “Ascension Bonus Stat ของตัวละคร” ที่เลเวล 90 แล้ว *บวกเข้ากับ Base*.");
+  lines.push("- ดึง/อ้างอิง Base Lv.90 ของตัวละคร (HP/ATK/DEF + Base CR 5%, Base CD 50%, Base ER 100%).");
+  lines.push("- ดึง/อ้างอิง Ascension Bonus Stat ที่เลเวล 90 แล้ว แล้วบวกเข้ากับ Base.");
   lines.push("- รวม Base + Ascension + ค่าจาก Artifact/Weapon ก่อนเทียบกับเป้าหมาย.");
-  lines.push("- ถ้ามี `shownTotals` ให้ถือเป็นตัวเลขความจริง (ห้ามบอกว่าต่ำถ้าแตะเป้าแล้ว).");
+  lines.push("- ถ้ามี shownTotals ให้ถือเป็นตัวเลขความจริง (ห้ามบอกว่าต่ำถ้าแตะเป้าแล้ว).");
 
   lines.push("");
   lines.push("เป้าหมาย (Golden Ratio โดยทั่วไป):");
-  lines.push("- CR ~70–80% | CD ~130–160% | ER ~120–150%");
+  lines.push("- CR ประมาณ 70–80% | CD ประมาณ 130–160% | ER ประมาณ 120–150%");
 
   return [
     `คุณเป็นผู้เชี่ยวชาญ Genshin Impact ช่วยวิเคราะห์อาร์ติแฟกต์ให้ “${charName}” เป็นภาษาไทยแบบสั้น กระชับ อ่านง่าย`,
     lines.join("\n"),
-    `รูปแบบผลลัพธ์ (ข้อความธรรมดา):`,
+    `รูปแบบผลลัพธ์ (ข้อความธรรมดา ไม่มี Markdown):`,
     `A) สรุปตัวเลขที่คำนวณได้หลังรวม Base+Ascension+ของ: CR/CD/ER (ถ้ามี shownTotals ให้ชี้ว่าตัดสินตาม shownTotals)`,
     `B) สรุปสเตตสำคัญที่ควรโฟกัส (อ้างอิง golden ratio)`,
     `C) ประเมิน main/sub รายชิ้นแบบย่อ (ดี/พอใช้/ควรเปลี่ยน + เหตุผลสั้น)`,
     `D) คำแนะนำเชิงปฏิบัติ`,
-    `ห้ามใช้ ** เพื่อเลี่ยงลายตา`,
+    `ห้ามใช้ตัวหนา/ตัวเอียง/หัวข้อ/โค้ดบล็อก และห้ามใช้สัญลักษณ์ ** __ _ \` # > ใดๆ`,
   ].join("\n\n");
 }
 
@@ -116,7 +149,7 @@ function makePromptHSR(b: BodyHSR) {
 
   if ((b as any).totalsFromGear) {
     const t = (b as any).totalsFromGear as TotalsHSR;
-    const f = (x?: number, p=1) => typeof x === "number" ? x.toFixed(p) : "-";
+    const f = (x?: number, p = 1) => (typeof x === "number" ? x.toFixed(p) : "-");
     lines.push(
       `สรุปรวมจากของ+Light Cone (ยังไม่รวม Base/Ascension): CR ${f(t.cr)}% | CD ${f(t.cd)}% | ERR ${f(t.err_pct)}% | EHR ${f(t.ehr_pct)}% | BE ${f(t.be_pct)}% | SPD% ${f(t.spd_pct)} | HP% ${f(t.hp_pct)} | ATK% ${f(t.atk_pct)} | DEF% ${f(t.def_pct)}`
     );
@@ -125,12 +158,12 @@ function makePromptHSR(b: BodyHSR) {
   if ((b as any).shownTotals) {
     const s = (b as any).shownTotals as TotalsShownHSR;
     const pct = (x?: number) => (typeof x === "number" ? x * 100 : undefined);
-    const hp=s.hp, atk=s.atk, def=s.def, spd=s.spd;
-    const cr=pct(s.cr), cd=pct(s.cd), err=pct(s.err), ehr=pct(s.ehr), be=pct(s.be);
+    const hp = s.hp, atk = s.atk, def = s.def, spd = s.spd;
+    const cr = pct(s.cr), cd = pct(s.cd), err = pct(s.err), ehr = pct(s.ehr), be = pct(s.be);
     const dmg = [
       ["Physical", pct(s.physical)], ["Fire", pct(s.fire)], ["Ice", pct(s.ice)], ["Lightning", pct(s.lightning)],
       ["Wind", pct(s.wind)], ["Quantum", pct(s.quantum)], ["Imaginary", pct(s.imaginary)],
-    ].filter(x=>typeof x[1]==="number").map(x=>`${x[0]} ${(x[1] as number).toFixed(1)}%`).join(" / ");
+    ].filter(x => typeof x[1] === "number").map(x => `${x[0]} ${(x[1] as number).toFixed(1)}%`).join(" / ");
     lines.push(`ค่าสรุปบนโปรไฟล์ (ถือเป็นค่าจริง): HP ${hp ?? "-"} | ATK ${atk ?? "-"} | DEF ${def ?? "-"} | SPD ${spd ?? "-"} | CR ${(cr ?? 0).toFixed(1)}% | CD ${(cd ?? 0).toFixed(1)}% | ERR ${(err ?? 0).toFixed(1)}% | EHR ${(ehr ?? 0).toFixed(1)}% | BE ${(be ?? 0).toFixed(1)}%`);
     if (dmg) lines.push(`DMG Bonus: ${dmg}`);
   }
@@ -139,7 +172,7 @@ function makePromptHSR(b: BodyHSR) {
   lines.push("เกณฑ์การคำนวณ (HSR):");
   lines.push("- ใช้ Base Lv.80/80 หรือ 80/90 ตามโปรไฟล์ + Ascension Bonus (CR/CD/HP%/ATK%/SPD/ERR/EHR/BE ฯลฯ).");
   lines.push("- รวม Base + Ascension + Relic/Ornament/Light Cone เพื่อค่าสุดท้าย ก่อนเทียบกับเป้าหมาย.");
-  lines.push("- ถ้ามี `shownTotals` ให้ตัดสินตามนั้น ห้ามสรุปว่าต่ำถ้าค่าถึง/เกินเป้าแล้ว.");
+  lines.push("- ถ้ามี shownTotals ให้ตัดสินตามนั้น ห้ามสรุปว่าต่ำถ้าค่าถึง/เกินเป้าแล้ว.");
 
   lines.push("");
   lines.push("เป้าหมายทั่วไป (กลางๆ):");
@@ -149,12 +182,12 @@ function makePromptHSR(b: BodyHSR) {
   return [
     `คุณเป็นผู้เชี่ยวชาญ Honkai: Star Rail ช่วยวิเคราะห์ Relic/Ornament ให้ “${charName}” เป็นภาษาไทยแบบสั้น กระชับ`,
     lines.join("\n"),
-    `รูปแบบผลลัพธ์ (ข้อความธรรมดา):`,
+    `รูปแบบผลลัพธ์ (ข้อความธรรมดา ไม่มี Markdown):`,
     `A) สรุปตัวเลขหลังรวม Base+Ascension+ของ: CR/CD/ERR/EHR/SPD (ถ้ามี shownTotals ให้ชี้ว่าตัดสินตาม shownTotals)`,
     `B) โฟกัสสเตตตามบทบาท`,
     `C) ประเมิน main/sub รายชิ้น (ดี/พอใช้/ควรเปลี่ยน + เหตุผลสั้น)`,
     `D) คำแนะนำเชิงปฏิบัติ (แตะ SPD breakpoint, ปรับ EHR/ERR ฯลฯ)`,
-    `ห้ามใช้ ** เพื่อเลี่ยงลายตา`,
+    `ห้ามใช้ตัวหนา/ตัวเอียง/หัวข้อ/โค้ดบล็อก และห้ามใช้สัญลักษณ์ ** __ _ \` # > ใดๆ`,
   ].join("\n\n");
 }
 
@@ -217,10 +250,11 @@ export async function POST(req: NextRequest) {
 
     try {
       const { text, model } = await callGemini(prompt);
-      if (!text.trim()) {
+      const plain = toPlain(text); // ล้าง Markdown อีกรอบกันพลาด
+      if (!plain.trim()) {
         return NextResponse.json({ ok: false, error: "empty_text" }, { status: 200 });
       }
-      return NextResponse.json({ ok: true, text, game: (body as any).game, mode: (body as any).mode || "advice", model });
+      return NextResponse.json({ ok: true, text: plain, game: (body as any).game, mode: (body as any).mode || "advice", model });
     } catch (e) {
       const msg = (e as Error)?.message || "gemini_error";
       return NextResponse.json({ ok: false, error: msg }, { status: 200 });
