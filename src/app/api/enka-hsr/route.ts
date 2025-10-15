@@ -1,167 +1,179 @@
 /* src/app/api/enka-hsr/route.ts
-   ดึงโปรไฟล์จาก enka.network (HSR) + คืนตัวละคร, เรลิก, ค่ารวมพื้นฐาน
-   — ไม่มี implicit any — */
+   ดึงโปรไฟล์จาก enka.network (HSR) + คืน characters & details แบบย่อ
+   เน้นให้ “ดึงได้ก่อน” และ shape ใกล้เคียงฝั่ง GI ที่คุณใช้อยู่ */
+
 import { NextRequest, NextResponse } from "next/server";
 
-type GameKey = "hsr";
-
-/* ---------- ชื่อ prop ให้อ่านง่าย ---------- */
-const PROP_MAP: Record<string, string> = {
-  FIGHT_PROP_BASE_HP: "HP",
-  FIGHT_PROP_HP: "HP",
-  FIGHT_PROP_HP_PERCENT: "HP%",
-  FIGHT_PROP_BASE_ATTACK: "ATK",
-  FIGHT_PROP_ATTACK: "ATK",
-  FIGHT_PROP_ATK_PERCENT: "ATK%",
-  FIGHT_PROP_BASE_DEFENSE: "DEF",
-  FIGHT_PROP_DEFENSE: "DEF",
-  FIGHT_PROP_DEF_PERCENT: "DEF%",
-  FIGHT_PROP_CRITICAL: "CRIT Rate%",
-  FIGHT_PROP_CRITICAL_HURT: "CRIT DMG%",
-  FIGHT_PROP_CHARGE_EFFICIENCY: "Energy Recharge%",
-  FIGHT_PROP_ELEMENT_MASTERY: "Elemental Mastery",
-  FIGHT_PROP_HEAL_ADD: "Healing Bonus%",
-  FIGHT_PROP_PHYSICAL_ADD_HURT: "Physical DMG%",
-  FIGHT_PROP_FIRE_ADD_HURT: "Pyro DMG%",
-  FIGHT_PROP_WATER_ADD_HURT: "Hydro DMG%",
-  FIGHT_PROP_WIND_ADD_HURT: "Anemo DMG%",
-  FIGHT_PROP_ELEC_ADD_HURT: "Electro DMG%",
-  FIGHT_PROP_ICE_ADD_HURT: "Cryo DMG%",
-  FIGHT_PROP_ROCK_ADD_HURT: "Geo DMG%",
-  FIGHT_PROP_GRASS_ADD_HURT: "Dendro DMG%",
+/* ---------- Minimal types จาก response ปัจจุบันของ enka HSR ---------- */
+type HsrProp = { type?: string; value?: number };
+type HsrRelic = {
+  type?: number;                      // 1..6
+  level?: number;
+  _flat?: { name?: string; setName?: string; props?: HsrProp[] }; // บางฟอร์แมต
+  flat?: {
+    relicType?: string; name?: string; setName?: string;
+    relicMainstat?: HsrProp; relicSubstats?: HsrProp[];
+  };
+  relic?: { level?: number };         // บางฟอร์แมต
 };
-function prettyProp(key?: string): string {
-  if (!key) return "";
-  return PROP_MAP[key] || key;
-}
 
-/* ---------- HSR Types (ที่ใช้จริง) ---------- */
-type HsrMain = { type?: string; value?: number };
-type HsrSub = { type?: string; value?: number };
-type HsrFlat = {
-  relicType?: string; // HEAD / HANDS / BODY / FEET / PLANAR_SPHERE / LINK_ROPE
-  name?: string;
-  setName?: string;
-  icon?: string;
-  relicMainstat?: HsrMain;
-  relicSubstats?: HsrSub[];
-};
-type HsrRelic = { flat?: HsrFlat; relic?: { level?: number } };
 type HsrCharacter = {
   avatarId?: number;
   avatar?: { id?: number };
   name?: string;
   avatarName?: string;
   level?: number;
-  relics?: HsrRelic[];
+  relicList?: HsrRelic[];             // ชื่อใน detailInfo
+  relics?: HsrRelic[];                // เผื่ออีกฟอร์แมต
   fightPropMap?: Record<string, number>;
 };
-type HsrTop = {
-  playerDetailInfo?: { nickname?: string; avatarDetailList?: HsrCharacter[] };
-  owner?: { nickname?: string };
-  avatarDetailList?: HsrCharacter[];
-};
 
-/* ---------- Output ---------- */
-export type RelicSummary = {
-  piece: string;
-  name: string;
-  set?: string;
-  main: string;
-  subs: string[];
-  level?: number;
-  icon?: string; // ไม่คืนค่า
-};
-export type CharacterLite = { id: number; name: string; level: number };
-export type HsrDetail = {
-  id: number;
-  name: string;
-  level: number;
-  relics: RelicSummary[];
-  shownTotals?: Record<string, number>;
-};
+type HsrTop =
+  | { detailInfo?: { nickname?: string; avatarDetailList?: HsrCharacter[] }; uid?: string }
+  | { playerDetailInfo?: { nickname?: string; avatarDetailList?: HsrCharacter[] }; uid?: string }
+  | { owner?: { nickname?: string }; avatarDetailList?: HsrCharacter[]; uid?: string };
+
+/* ---------- Output shape ให้เข้ากับโค้ดหลัก ---------- */
+type CharacterLite = { id: number; name: string; level: number };
+type RelicSummary = { piece: string; name: string; set?: string; main: string; subs: string[]; level?: number };
+type HsrDetailOut = { id: number; name: string; level: number; relics: RelicSummary[]; shownTotals?: Record<string, number> };
 
 /* ---------- Helpers ---------- */
-function safeStr(v: unknown, fallback = ""): string {
-  return typeof v === "string" ? v : fallback;
+function pieceFromType(t?: number, fallback?: string): string {
+  switch (t) {
+    case 1: return "HEAD";
+    case 2: return "HANDS";
+    case 3: return "BODY";
+    case 4: return "FEET";
+    case 5: return "PLANAR_SPHERE";
+    case 6: return "LINK_ROPE";
+    default: return fallback || "Relic";
+  }
 }
-function mapHsrRelic(r: HsrRelic): RelicSummary {
-  const flat = r.flat ?? {};
-  const main = flat.relicMainstat
-    ? `${prettyProp(flat.relicMainstat.type)}: ${flat.relicMainstat.value ?? ""}`
-    : "";
-  const subs: string[] = (flat.relicSubstats ?? []).map(
-    (s) => `${prettyProp(s.type)}: ${s.value ?? ""}`
-  );
-  return {
-    piece: safeStr(flat.relicType),
-    name: safeStr(flat.name),
-    set: safeStr(flat.setName) || undefined,
-    main,
-    subs,
-    level: r.relic?.level ?? undefined,
-    icon: undefined,
+
+function prettyProp(k?: string): string {
+  if (!k) return "";
+  const m: Record<string, string> = {
+    HPAddedRatio: "HP%",
+    AttackAddedRatio: "ATK%",
+    DefenceAddedRatio: "DEF%",
+    HPDelta: "HP",
+    AttackDelta: "ATK",
+    DefenceDelta: "DEF",
+    CriticalChance: "CRIT Rate%",
+    CriticalDamage: "CRIT DMG%",
+    SpeedDelta: "SPD",
+    StatusProbability: "Effect Hit%",
+    EffectHitRate: "Effect Hit%",
+    StatusResistance: "RES%",
+    BreakDamageAddedRatio: "Break%",
+    BreakDamageAddedRatioBase: "Break%",
+    WindAddedRatio: "Wind DMG%",
+    QuantumAddedRatio: "Quantum DMG%",
+    IceAddedRatio: "Ice DMG%",
+    FireAddedRatio: "Fire DMG%",
+    PhysicalAddedRatio: "Physical DMG%",
+    ImaginaryAddedRatio: "Imaginary DMG%",
+    LightningAddedRatio: "Lightning DMG%",
+    HealRatioBase: "Healing%",
+    SPRatioBase: "Energy Regen%",
   };
+  return m[k] || k;
 }
-function mapHsrCharacter(c: HsrCharacter): HsrDetail {
+
+function fmtStat(k?: string, v?: number): string {
+  if (!k || v == null) return "";
+  const name = prettyProp(k);
+  const isPercent = /%$/.test(name) || /AddedRatio|Chance|Damage|Ratio|Base|Resist|Hit|Regen/i.test(k);
+  const shown = isPercent ? (v * 100).toFixed(2) : Number(v).toFixed(0);
+  return `${name}: ${shown}`;
+}
+
+function toRelicSummary(r: HsrRelic): RelicSummary {
+  const piece =
+    r.flat?.relicType ||
+    pieceFromType(r.type) ||
+    "Relic";
+
+  let name = r.flat?.name || r._flat?.name || "";
+  let set = r.flat?.setName || r._flat?.setName || undefined;
+
+  let main = "";
+  let subs: string[] = [];
+
+  if (r.flat?.relicMainstat) main = fmtStat(r.flat.relicMainstat.type, r.flat.relicMainstat.value);
+  if (r.flat?.relicSubstats?.length) subs = r.flat.relicSubstats.map(s => fmtStat(s.type, s.value)).filter(Boolean);
+
+  // ฟอร์แมตอีกแบบ (_flat.props) main = index 0
+  if (!main && r._flat?.props?.length) {
+    const [m, ...rest] = r._flat.props;
+    if (m) main = fmtStat(m.type, m.value);
+    subs = rest.map(s => fmtStat(s.type, s.value)).filter(Boolean);
+  }
+
+  const level = r.relic?.level ?? r.level ?? undefined;
+  return { piece, name, set, main, subs, level };
+}
+
+function mapHsrCharacter(c: HsrCharacter): HsrDetailOut {
   const id = c.avatarId ?? c.avatar?.id ?? 0;
-  const name = safeStr(c.name ?? c.avatarName ?? `#${id}`);
+  const name = c.name ?? c.avatarName ?? `#${id}`;
   const level = c.level ?? 1;
-  const relics: RelicSummary[] = (c.relics ?? []).map((r) => mapHsrRelic(r));
+  const srcRelics = Array.isArray(c.relicList) ? c.relicList : (Array.isArray(c.relics) ? c.relics : []);
+  const relics = srcRelics.map(toRelicSummary);
   return { id, name, level, relics, shownTotals: c.fightPropMap || {} };
 }
 
-/* ---------- Route ---------- */
+/* ---------- Core fetch ---------- */
+async function fetchHsr(uid: string) {
+  const url = `https://enka.network/api/hsr/uid/${encodeURIComponent(uid)}`;
+  const r = await fetch(url, { headers: { "User-Agent": "Chatbot/1.0" }, cache: "no-store" });
+  if (!r.ok) return { ok: false as const, status: r.status };
+
+  const j = (await r.json()) as HsrTop;
+
+  const list: HsrCharacter[] =
+    (j as any).detailInfo?.avatarDetailList ??
+    (j as any).playerDetailInfo?.avatarDetailList ??
+    (j as any).avatarDetailList ??
+    [];
+
+  if (!Array.isArray(list) || list.length === 0) {
+    return { ok: false as const, status: 404, error: "no_public_characters" };
+  }
+
+  const detailsArr = list.map(mapHsrCharacter);
+  const characters: CharacterLite[] = detailsArr.map(d => ({ id: d.id, name: d.name, level: d.level }));
+  const player =
+    (j as any).detailInfo?.nickname ??
+    (j as any).playerDetailInfo?.nickname ??
+    (j as any).owner?.nickname ??
+    "";
+
+  const details = Object.fromEntries(detailsArr.map(d => [String(d.id), d]));
+  return { ok: true as const, game: "hsr", player, uid, characters, details };
+}
+
+/* ---------- POST (ใช้งานจริง) ---------- */
 export async function POST(req: NextRequest) {
   try {
     const { uid } = (await req.json().catch(() => ({}))) as { uid?: string };
     if (!uid) return NextResponse.json({ ok: false, error: "missing_uid" }, { status: 400 });
 
-    const url = `https://enka.network/api/hsr/uid/${encodeURIComponent(uid)}`;
-
-    const r = await fetch(url, {
-      headers: { "User-Agent": "Chatbot/1.0" },
-      cache: "no-store",
-    });
-    if (!r.ok) {
-      return NextResponse.json(
-        { ok: false, error: "fetch_failed", status: r.status },
-        { status: 502 }
-      );
-    }
-
-    const j = (await r.json()) as HsrTop;
-    const list: HsrCharacter[] =
-      j.playerDetailInfo?.avatarDetailList ?? j.avatarDetailList ?? [];
-
-    if (!Array.isArray(list) || list.length === 0) {
-      return NextResponse.json(
-        { ok: false, error: "no_public_characters" },
-        { status: 404 }
-      );
-    }
-
-    const detailsArr = list.map(mapHsrCharacter);
-    const characters: CharacterLite[] = detailsArr.map((d) => ({
-      id: d.id,
-      name: d.name,
-      level: d.level,
-    }));
-    const player = j.playerDetailInfo?.nickname ?? j.owner?.nickname ?? "";
-
-    const details = Object.fromEntries(detailsArr.map((d) => [String(d.id), d]));
-
-    return NextResponse.json({
-      ok: true,
-      game: "hsr",
-      player,
-      uid,
-      characters,
-      details,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[enka-hsr] error", msg);
+    const out = await fetchHsr(uid);
+    if (!out.ok) return NextResponse.json(out, { status: out.status ?? 502 });
+    return NextResponse.json(out);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
+}
+
+/* ---------- GET (ไว้เทสในเบราว์เซอร์) ---------- */
+export async function GET(req: NextRequest) {
+  const uid = req.nextUrl.searchParams.get("uid") || "";
+  if (!uid) return NextResponse.json({ ok: false, error: "missing_uid" }, { status: 400 });
+  const out = await fetchHsr(uid);
+  if (!out.ok) return NextResponse.json(out, { status: out.status ?? 502 });
+  return NextResponse.json(out);
 }
