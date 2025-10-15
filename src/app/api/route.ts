@@ -104,7 +104,7 @@ function pickIndexFromMessage(msg: string, max: number): number | null {
 /* ===================== Icons & Ordering ===================== */
 /* GI */
 const ICON_URLS_GI: Record<string, string> = {
-  Flower:  "https://genshin-impact.fandom.com/wiki/File:Icon_Flower_of_Life.png",
+  Flower:  "https://static.wikia.nocookie.net/gensin-impact/images/2/2d/Icon_Flower_of_Life.png/revision/latest?cb=20210712005358",
   Plume:   "https://genshin-impact.fandom.com/wiki/File:Icon_Plume_of_Death.png",
   Sands:   "https://genshin-impact.fandom.com/wiki/File:Icon_Sands_of_Eon.png",
   Goblet:  "https://genshin-impact.fandom.com/wiki/File:Icon_Goblet_of_Eonothem.png",
