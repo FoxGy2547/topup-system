@@ -137,15 +137,20 @@ function keyizeHSR(piece: string) {
   return piece.replace(/\s+/g, "_").replace(/-/g, "_").toUpperCase();
 }
 
+/* จัดรูปโคลอนให้เว้น 1 วรรคเสมอ (ลบช่องว่างซ้าย/ขวา แล้วใส่ ": ") */
+function normalizeColons(s?: string) {
+  return String(s ?? "").replace(/\s*:\s*/g, ": ");
+}
+
 /* === เรนเดอร์แพทเทิร์นแบบที่ต้องการ ===
 ตัวอย่าง GI:
 •  https://.../Icon_Flower_of_Life.png Flower [+20]
-main: HP : 4780
+main: HP: 4780
 subs:
-- Energy Recharge% : 16.8
-- CRIT DMG% : 15.5
-- DEF : 23
-- CRIT Rate% : 9.7
+- Energy Recharge%: 16.8
+- CRIT DMG%: 15.5
+- DEF: 23
+- CRIT Rate%: 9.7
 */
 function renderGearLinksPattern(list: AnyGear[], game: GameKey): string {
   if (!Array.isArray(list) || list.length === 0) return "(ไม่พบชิ้นส่วน)";
@@ -167,17 +172,17 @@ function renderGearLinksPattern(list: AnyGear[], game: GameKey): string {
     if (game === "gi") {
       const url = ICON_URLS_GI[g.piece] || "";
       const first = `•  ${url} ${g.piece}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
-      const main = `main: ${g.main || "-"}`;
+      const main = `main: ${normalizeColons(g.main) || "-"}`;
       const subsHead = `subs:`;
-      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${s}`).join("\n") : "";
+      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
       blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
     } else {
       const key = keyizeHSR(g.piece);
       const url = ICON_URLS_HSR[key] || "";
       const first = `•  ${url} ${key}${typeof g.level === "number" ? ` [+${g.level}]` : ""}`;
-      const main = `main: ${g.main || "-"}`;
+      const main = `main: ${normalizeColons(g.main) || "-"}`;
       const subsHead = `subs:`;
-      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${s}`).join("\n") : "";
+      const subsBody = g.subs?.length ? g.subs.map((s) => `- ${normalizeColons(s)}`).join("\n") : "";
       blocks.push([first, main, subsHead, subsBody].filter(Boolean).join("\n"));
     }
   }
