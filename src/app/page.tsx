@@ -13,7 +13,6 @@ type QuickReply = { label: string; value: string };
 
 type ApiResponse = {
   reply?: string;
-  // replyHtml ถูกยุบ: backend ส่ง HTML ใน reply โดยตรงแล้ว
   quickReplies?: string[];
   paymentRequest?: any;
   sets?: {
@@ -32,7 +31,7 @@ type NluResp =
 type ChatMessage = {
   role: 'user' | 'bot' | 'preview';
   text: string;
-  html?: string;        // ✅ เก็บ HTML (มาจาก reply ถ้าเป็น HTML)
+  html?: string;
   imageUrl?: string;
   sets?: ApiResponse['sets'];
 };
@@ -70,7 +69,6 @@ function mapCharNameById(idNum: number): string | null {
   return (hsrMap as Record<string, string>)[String(idNum)] ?? null; // HSR ids: 1xxx
 }
 function prettifyCharHashLabel(base: string): string {
-  // จับรูปแบบ "#1310 (lv.80)" หรือ "#1412" หรือ "#10000002 (lv.90)"
   const m = base.match(/^\s*#?\s*(\d{3,12})\b(.*)$/);
   if (!m) return base;
   const idNum = parseInt(m[1], 10);
@@ -258,8 +256,9 @@ function AdviceFromBackend({ sets }: { sets: NonNullable<ApiResponse['sets']> })
 }
 
 /* ====================== Sanitize & BotText ====================== */
-// ✅ ปล่อย <img src="/pic/..."> (local path) และ http(s) โดเมนเดียวกับแอป + โดเมน fandom ที่เคยใช้
-const EXTRA_IMG_HOST_WHITELIST = new Set([
+// ✅ รูปจากบอท: อนุญาตเฉพาะ /pic/... (ไฟล์ในโปรเจกต์เท่านั้น) — ไม่ดึงจากเว็บภายนอก
+//    ลิงก์ <a> ยังอนุญาต http(s) ที่ปลอดภัยและ path ภายในได้
+const EXTRA_LINK_HOST_WHITELIST = new Set([
   'genshin-impact.fandom.com',
   'honkai-star-rail.fandom.com',
 ]);
@@ -280,11 +279,12 @@ function sanitizeBotHtml(src: string) {
     if (/^https?:\/\//i.test(href)) {
       try {
         const u = new URL(href);
-        const sameHost = typeof window !== 'undefined' && u.hostname === window.location.hostname;
-        if (sameHost || EXTRA_IMG_HOST_WHITELIST.has(u.hostname)) {
+        const sameHost =
+          typeof window !== 'undefined' && u.hostname === window.location.hostname;
+        if (sameHost || EXTRA_LINK_HOST_WHITELIST.has(u.hostname)) {
           return `<a href="${href}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
         }
-      } catch { }
+      } catch {}
       return inner;
     }
     // allow relative
@@ -294,35 +294,24 @@ function sanitizeBotHtml(src: string) {
     return inner;
   });
 
-  // แปลง <img> ให้เหลือเฉพาะ src,width,height,alt และตรวจโดเมน/พาธ
+  // ✅ <img> อนุญาตเฉพาะรูปภายในโปรเจกต์ (/pic/...) เท่านั้น
   s = s.replace(/<img([^>]*?)>/gi, (_m, attrs) => {
     const get = (name: string, def = '') => {
       const re = new RegExp(`${name}\\s*=\\s*"(.*?)"`, 'i');
       return re.exec(attrs)?.[1] ?? def;
     };
+
     const srcUrl = get('src');
     if (!srcUrl) return '';
-    // ✅ อนุญาต path ภายในโปรเจกต์ เช่น /pic/...
-    if (srcUrl.startsWith('/pic/')) {
-      const alt = get('alt', '');
-      const w = get('width', '30');
-      const h = get('height', '30');
-      return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
-    }
-    // อนุญาต http(s) โดเมนเดียวกัน และ fandom whitelist
-    if (/^https?:\/\//i.test(srcUrl)) {
-      try {
-        const u = new URL(srcUrl);
-        const sameHost = typeof window !== 'undefined' && u.hostname === window.location.hostname;
-        if (sameHost || EXTRA_IMG_HOST_WHITELIST.has(u.hostname)) {
-          const alt = get('alt', '');
-          const w = get('width', '30');
-          const h = get('height', '30');
-          return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
-        }
-      } catch { }
-    }
-    return ''; // ไม่ผ่านเกณฑ์
+
+    // ถ้าไม่ใช่รูปภายในโปรเจกต์ ให้ทิ้ง
+    if (!srcUrl.startsWith('/pic/')) return '';
+
+    const alt = get('alt', '');
+    const w = get('width', '30');
+    const h = get('height', '30');
+
+    return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
   });
 
   return s;
@@ -384,7 +373,7 @@ function stripPriceSuffix(s: string) {
   return s.replace(/\s*-\s*[\d,]+(?:\.\d{2})?\s*(?:บาท|฿|THB)?\s*$/i, '').trim();
 }
 function buildMenuMap(reply: string): Record<number, string> {
-  const textOnly = reply.replace(/<[^>]+>/g, ' '); // กันกรณี reply เป็น HTML
+  const textOnly = reply.replace(/<[^>]+>/g, ' ');
   const lines = textOnly.split(/\r?\n/);
   let cur: number | null = null;
   const acc: Record<number, string[]> = {};
@@ -460,7 +449,7 @@ export default function Page() {
       const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
       const j = await r.json();
       if (j?.ok) setBalance(Number(j.balance) || 0);
-    } catch { }
+    } catch {}
   };
   const VIS_POLL_MS = 20_000;
   const HIDDEN_POLL_MS = 120_000;
@@ -557,7 +546,6 @@ export default function Page() {
 
     setMessages((p) => [...p, { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets }]);
 
-    // ⬇️ ถ้าเป็นข้อความยกเลิก/เมนูหลัก ให้รีเซ็ต state ปุ่ม + placeholder
     if (/(ยกเลิกแล้วค่ะ|เมนูหลัก|เริ่มใหม่)/i.test(reply)) {
       setAwaitingUID(false);
       setPendingNumberRange(null);
@@ -569,7 +557,6 @@ export default function Page() {
     setShowPaidButton(!!enforcedQR);
     if (enforcedQR) setPaidSoFar(0);
 
-    // quick replies จาก backend
     if (Array.isArray(data.quickReplies)) {
       setDynamicQR(data.quickReplies);
       setConfirmMode(
@@ -582,7 +569,6 @@ export default function Page() {
       setConfirmMode(false);
     }
 
-    // ตรวจเมนูตัวเลข (ข้ามถ้า reply เป็น HTML)
     if (!html) {
       let minSel = 1;
       let maxSel = 0;
@@ -612,7 +598,6 @@ export default function Page() {
         setMenuMap({});
       }
 
-      // ตรวจ state รอ UID (เฉพาะข้อความธรรมดา)
       if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
         setAwaitingUID(true);
         setPendingNumberRange(null);
@@ -624,7 +609,6 @@ export default function Page() {
         setAwaitingUID(false);
       }
     } else {
-      // เป็น HTML: ไม่ใช่ขั้นเมนู/UID
       setPendingNumberRange(null);
       setMenuMap({});
     }
@@ -667,7 +651,7 @@ export default function Page() {
         const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
         const j = await r.json();
         have = j?.ok ? Number(j.balance || 0) : 0;
-      } catch { }
+      } catch {}
 
       const use = Math.min(have, expected);
       const remain = Math.max(0, Number((expected - use).toFixed(2)));
@@ -708,7 +692,6 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    // ⬇️ รีเซ็ตเมื่อพิมพ์ "ยกเลิก"
     if (/^ยกเลิก$/i.test(original)) {
       setAwaitingUID(false);
       setPendingNumberRange(null);
@@ -725,7 +708,6 @@ export default function Page() {
     if (nluRes.intent === 'confirm') { await processConfirm(); return; }
     if (nluRes.intent === 'cancel') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
-    // เปิดเมนูดูเซ็ต (ไม่ทำ OCR/อัปโหลดแล้ว)
     if (nluRes.intent === 'artifact_gi') {
       const open = await callAPI('ดู artifact genshin impact', loggedInUser);
       pushBot(open);
@@ -749,7 +731,6 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    // ⬇️ รีเซ็ตทุกอย่างเมื่อกด "ยกเลิก"
     if (value.trim() === 'ยกเลิก') {
       setAwaitingUID(false);
       setPendingNumberRange(null);
@@ -1058,7 +1039,6 @@ export default function Page() {
                   const isCancel = confirmMode && value.trim() === 'ยกเลิก';
                   const color = confirmMode ? (isConfirm ? 'green' : isCancel ? 'red' : 'gray') : 'indigo';
 
-                  // base label เดิม
                   const base =
                     /^\d+$/.test(value)
                       ? value
@@ -1066,7 +1046,6 @@ export default function Page() {
                         ? value
                         : defaults.find((d) => d.value === value)?.label || value;
 
-                  // ✅ แปลง "#id (lv.xx)" -> "ชื่อจริง (lv.xx)" ด้วยแผนที่ gi/hsr
                   const label = prettifyCharHashLabel(base);
 
                   return (
