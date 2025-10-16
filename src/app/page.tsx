@@ -4,6 +4,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { ocrWithFallback } from '@/lib/tess';
+import giMap from '@/data/gi_characters.json';
+import hsrMap from '@/data/hsr_characters.json';
 
 /* ====================== Types ====================== */
 type GameKey = 'gi' | 'hsr';
@@ -59,6 +61,24 @@ const splitlines = (s: string) =>
 // ตรวจว่าดูเหมือน HTML มั้ย (ใช้เฉพาะกับ payload จาก backend)
 const looksLikeHtml = (s?: string) =>
   !!s && /<\s*(?:div|span|img|ul|li|b|i|strong|br|a)\b|<\/\s*[a-z]/i.test(s);
+
+/* ---------- Map id -> display name (สำหรับปุ่ม quick reply ที่เป็น "#1234 (lv.xx)") ---------- */
+function mapCharNameById(idNum: number): string | null {
+  if (idNum >= 10_000_000) {
+    return (giMap as Record<string, string>)[String(idNum)] ?? null; // GI ids: 100000xx
+  }
+  return (hsrMap as Record<string, string>)[String(idNum)] ?? null; // HSR ids: 1xxx
+}
+function prettifyCharHashLabel(base: string): string {
+  // จับรูปแบบ "#1310 (lv.80)" หรือ "#1412" หรือ "#10000002 (lv.90)"
+  const m = base.match(/^\s*#?\s*(\d{3,12})\b(.*)$/);
+  if (!m) return base;
+  const idNum = parseInt(m[1], 10);
+  if (!isFinite(idNum)) return base;
+  const suffix = m[2] || '';
+  const name = mapCharNameById(idNum);
+  return name ? `${name}${suffix}` : base;
+}
 
 /* ====================== API helpers ====================== */
 async function callAPI(userMessage: string, username?: string): Promise<ApiResponse> {
@@ -528,20 +548,23 @@ export default function Page() {
   const isUnknownReply = (t?: string) =>
     !!t && /ขอโทษค่ะ.*ไม่เข้าใจ|กรุณาระบุใหม่|i don't understand|unknown/i.test(t);
 
-  const pushBot = (data: ApiResponse) => {
-    if (!data.reply) return;
-    const reply = data.reply || '';
+const pushBot = (data: ApiResponse) => {
+  if (!data.reply) return;
+  const reply = data.reply || '';
+  const html = looksLikeHtml(reply) ? reply : undefined;
+  const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
+  const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
 
-    // ✅ ถ้า reply เป็น HTML ให้ใส่ลง field html ด้วย
-    const html = looksLikeHtml(reply) ? reply : undefined;
+  setMessages((p) => [...p, { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets }]);
 
-    const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
-    const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
-
-    setMessages((p) => [
-      ...p,
-      { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets } as ChatMessage,
-    ]);
+  // ⬇️ ถ้าเป็นข้อความยกเลิก/เมนูหลัก ให้รีเซ็ต state ปุ่ม + placeholder
+  if (/(ยกเลิกแล้วค่ะ|เมนูหลัก|เริ่มใหม่)/i.test(reply)) {
+    setAwaitingUID(false);
+    setPendingNumberRange(null);
+    setMenuMap({});
+    setConfirmMode(false);
+    setShowPaidButton(false);
+  }
 
     setShowPaidButton(!!enforcedQR);
     if (enforcedQR) setPaidSoFar(0);
@@ -676,30 +699,27 @@ export default function Page() {
   };
 
   /* send */
-  const handleSend = async () => {
-    if (!input.trim()) return;
-    const original = input.trim();
-    setInput('');
-    pushUser(original);
-    setDynamicQR([]);
-    if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
+const handleSend = async () => {
+  if (!input.trim()) return;
+  const original = input.trim();
+  setInput('');
+  pushUser(original);
+  setDynamicQR([]);
+  if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
+  setShowPaidButton(false);
+
+  // ⬇️ รีเซ็ตเมื่อพิมพ์ "ยกเลิก"
+  if (/^ยกเลิก$/i.test(original)) {
+    setAwaitingUID(false);
+    setPendingNumberRange(null);
+    setMenuMap({});
+    setConfirmMode(false);
     setShowPaidButton(false);
 
-    if (awaitingUID && /^\d{6,12}$/.test(original)) {
-      const data = await robustSendUID(original, loggedInUser);
-      pushBot(data);
-      return;
-    }
-
-    if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
-      const n = parseInt(original, 10);
-      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
-        const title = menuMap[n];
-        const data = await robustSendPackage(title, n, loggedInUser);
-        pushBot(data);
-        return;
-      }
-    }
+    const data = await callAPI('ยกเลิก', loggedInUser);
+    pushBot(data);
+    return;
+  }
 
     const nluRes = await nlu(original);
     if (nluRes.intent === 'confirm') { await processConfirm(); return; }
@@ -724,17 +744,32 @@ export default function Page() {
   };
 
   const handleQuickReply = async (value: string) => {
-    pushUser(value);
-    setDynamicQR([]);
-    if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
+  pushUser(value);
+  setDynamicQR([]);
+  if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
+  setShowPaidButton(false);
+
+  // ⬇️ รีเซ็ตทุกอย่างเมื่อกด "ยกเลิก"
+  if (value.trim() === 'ยกเลิก') {
+    setAwaitingUID(false);
+    setPendingNumberRange(null);
+    setMenuMap({});
+    setConfirmMode(false);
     setShowPaidButton(false);
 
-    if (value.trim() === 'ยืนยัน') { await processConfirm(); return; }
-    if (value.trim() === 'ยกเลิก') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
-
-    const data = await callAPI(value, loggedInUser);
+    const data = await callAPI('ยกเลิก', loggedInUser);
     pushBot(data);
-  };
+    return;
+  }
+
+  if (value.trim() === 'ยืนยัน') {
+    await processConfirm();
+    return;
+  }
+
+  const data = await callAPI(value, loggedInUser);
+  pushBot(data);
+};
 
   /* upload slip */
   const fileSlipOnClick = () => fileSlipRef.current?.click();
@@ -1022,11 +1057,18 @@ export default function Page() {
                   const isConfirm = confirmMode && value.trim() === 'ยืนยัน';
                   const isCancel = confirmMode && value.trim() === 'ยกเลิก';
                   const color = confirmMode ? (isConfirm ? 'green' : isCancel ? 'red' : 'gray') : 'indigo';
-                  const label = /^\d+$/.test(value)
-                    ? value
-                    : dynamicQR.length
+
+                  // base label เดิม
+                  const base =
+                    /^\d+$/.test(value)
                       ? value
-                      : defaults.find((d) => d.value === value)?.label || value;
+                      : dynamicQR.length
+                        ? value
+                        : defaults.find((d) => d.value === value)?.label || value;
+
+                  // ✅ แปลง "#id (lv.xx)" -> "ชื่อจริง (lv.xx)" ด้วยแผนที่ gi/hsr
+                  const label = prettifyCharHashLabel(base);
+
                   return (
                     <GlassPill key={`qr-${index}-${value}`} color={color as any} onClick={() => handleQuickReply(value)}>
                       {label}
