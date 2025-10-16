@@ -4,8 +4,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { ocrWithFallback } from '@/lib/tess';
-import giMap from '@/data/gi_characters.json';
-import hsrMap from '@/data/hsr_characters.json';
 
 /* ====================== Types ====================== */
 type GameKey = 'gi' | 'hsr';
@@ -13,6 +11,7 @@ type QuickReply = { label: string; value: string };
 
 type ApiResponse = {
   reply?: string;
+  // replyHtml ถูกยุบ: backend ส่ง HTML ใน reply โดยตรงแล้ว
   quickReplies?: string[];
   paymentRequest?: any;
   sets?: {
@@ -31,7 +30,7 @@ type NluResp =
 type ChatMessage = {
   role: 'user' | 'bot' | 'preview';
   text: string;
-  html?: string;
+  html?: string;        // ✅ เก็บ HTML (มาจาก reply ถ้าเป็น HTML)
   imageUrl?: string;
   sets?: ApiResponse['sets'];
 };
@@ -61,23 +60,6 @@ const splitlines = (s: string) =>
 const looksLikeHtml = (s?: string) =>
   !!s && /<\s*(?:div|span|img|ul|li|b|i|strong|br|a)\b|<\/\s*[a-z]/i.test(s);
 
-/* ---------- Map id -> display name (สำหรับปุ่ม quick reply ที่เป็น "#1234 (lv.xx)") ---------- */
-function mapCharNameById(idNum: number): string | null {
-  if (idNum >= 10_000_000) {
-    return (giMap as Record<string, string>)[String(idNum)] ?? null; // GI ids: 100000xx
-  }
-  return (hsrMap as Record<string, string>)[String(idNum)] ?? null; // HSR ids: 1xxx
-}
-function prettifyCharHashLabel(base: string): string {
-  const m = base.match(/^\s*#?\s*(\d{3,12})\b(.*)$/);
-  if (!m) return base;
-  const idNum = parseInt(m[1], 10);
-  if (!isFinite(idNum)) return base;
-  const suffix = m[2] || '';
-  const name = mapCharNameById(idNum);
-  return name ? `${name}${suffix}` : base;
-}
-
 /* ====================== API helpers ====================== */
 async function callAPI(userMessage: string, username?: string): Promise<ApiResponse> {
   const res = await fetch('/api', {
@@ -102,9 +84,9 @@ async function nlu(text: string): Promise<NluResp> {
 
 /* ====================== OCR: Slip ====================== */
 const AMT_KEY_POS = [
-  'ยอดชำระ', 'ยอดสุทธิ', 'ยอดรวม', 'รวมทั้งสิ้น', 'สุทธิ', 'จำนวนเงิน', 'จำนวน', 'รวม', 'total', 'amount', 'paid', 'payment',
+  'ยอดชำระ','ยอดสุทธิ','ยอดรวม','รวมทั้งสิ้น','สุทธิ','จำนวนเงิน','จำนวน','รวม','total','amount','paid','payment',
 ];
-const CURRENCY_HINT = ['บาท', 'บาทถ้วน', 'thb', '฿'];
+const CURRENCY_HINT = ['บาท','บาทถ้วน','thb','฿'];
 
 function cleanSlipText(s: string) {
   return toArabic(s || '')
@@ -256,9 +238,8 @@ function AdviceFromBackend({ sets }: { sets: NonNullable<ApiResponse['sets']> })
 }
 
 /* ====================== Sanitize & BotText ====================== */
-// ✅ รูปจากบอท: อนุญาตเฉพาะ /pic/... (ไฟล์ในโปรเจกต์เท่านั้น) — ไม่ดึงจากเว็บภายนอก
-//    ลิงก์ <a> ยังอนุญาต http(s) ที่ปลอดภัยและ path ภายในได้
-const EXTRA_LINK_HOST_WHITELIST = new Set([
+// ✅ ปล่อย <img src="/pic/..."> (local path) และ http(s) โดเมนเดียวกับแอป + โดเมน fandom ที่เคยใช้
+const EXTRA_IMG_HOST_WHITELIST = new Set([
   'genshin-impact.fandom.com',
   'honkai-star-rail.fandom.com',
 ]);
@@ -279,9 +260,8 @@ function sanitizeBotHtml(src: string) {
     if (/^https?:\/\//i.test(href)) {
       try {
         const u = new URL(href);
-        const sameHost =
-          typeof window !== 'undefined' && u.hostname === window.location.hostname;
-        if (sameHost || EXTRA_LINK_HOST_WHITELIST.has(u.hostname)) {
+        const sameHost = typeof window !== 'undefined' && u.hostname === window.location.hostname;
+        if (sameHost || EXTRA_IMG_HOST_WHITELIST.has(u.hostname)) {
           return `<a href="${href}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
         }
       } catch {}
@@ -294,24 +274,35 @@ function sanitizeBotHtml(src: string) {
     return inner;
   });
 
-  // ✅ <img> อนุญาตเฉพาะรูปภายในโปรเจกต์ (/pic/...) เท่านั้น
+  // แปลง <img> ให้เหลือเฉพาะ src,width,height,alt และตรวจโดเมน/พาธ
   s = s.replace(/<img([^>]*?)>/gi, (_m, attrs) => {
     const get = (name: string, def = '') => {
       const re = new RegExp(`${name}\\s*=\\s*"(.*?)"`, 'i');
       return re.exec(attrs)?.[1] ?? def;
     };
-
     const srcUrl = get('src');
     if (!srcUrl) return '';
-
-    // ถ้าไม่ใช่รูปภายในโปรเจกต์ ให้ทิ้ง
-    if (!srcUrl.startsWith('/pic/')) return '';
-
-    const alt = get('alt', '');
-    const w = get('width', '30');
-    const h = get('height', '30');
-
-    return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
+    // ✅ อนุญาต path ภายในโปรเจกต์ เช่น /pic/...
+    if (srcUrl.startsWith('/pic/')) {
+      const alt = get('alt', '');
+      const w = get('width', '30');
+      const h = get('height', '30');
+      return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
+    }
+    // อนุญาต http(s) โดเมนเดียวกัน และ fandom whitelist
+    if (/^https?:\/\//i.test(srcUrl)) {
+      try {
+        const u = new URL(srcUrl);
+        const sameHost = typeof window !== 'undefined' && u.hostname === window.location.hostname;
+        if (sameHost || EXTRA_IMG_HOST_WHITELIST.has(u.hostname)) {
+          const alt = get('alt', '');
+          const w = get('width', '30');
+          const h = get('height', '30');
+          return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
+        }
+      } catch {}
+    }
+    return ''; // ไม่ผ่านเกณฑ์
   });
 
   return s;
@@ -373,7 +364,7 @@ function stripPriceSuffix(s: string) {
   return s.replace(/\s*-\s*[\d,]+(?:\.\d{2})?\s*(?:บาท|฿|THB)?\s*$/i, '').trim();
 }
 function buildMenuMap(reply: string): Record<number, string> {
-  const textOnly = reply.replace(/<[^>]+>/g, ' ');
+  const textOnly = reply.replace(/<[^>]+>/g, ' '); // กันกรณี reply เป็น HTML
   const lines = textOnly.split(/\r?\n/);
   let cur: number | null = null;
   const acc: Record<number, string[]> = {};
@@ -540,35 +531,35 @@ export default function Page() {
   const pushBot = (data: ApiResponse) => {
     if (!data.reply) return;
     const reply = data.reply || '';
+
+    // ✅ ถ้า reply เป็น HTML ให้ใส่ลง field html ด้วย
     const html = looksLikeHtml(reply) ? reply : undefined;
+
     const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
     const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
 
-    setMessages((p) => [...p, { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets }]);
-
-    if (/(ยกเลิกแล้วค่ะ|เมนูหลัก|เริ่มใหม่)/i.test(reply)) {
-      setAwaitingUID(false);
-      setPendingNumberRange(null);
-      setMenuMap({});
-      setConfirmMode(false);
-      setShowPaidButton(false);
-    }
+    setMessages((p) => [
+      ...p,
+      { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets } as ChatMessage,
+    ]);
 
     setShowPaidButton(!!enforcedQR);
     if (enforcedQR) setPaidSoFar(0);
 
+    // quick replies จาก backend
     if (Array.isArray(data.quickReplies)) {
       setDynamicQR(data.quickReplies);
       setConfirmMode(
         data.quickReplies.length === 2 &&
-        data.quickReplies.includes('ยืนยัน') &&
-        data.quickReplies.includes('ยกเลิก')
+          data.quickReplies.includes('ยืนยัน') &&
+          data.quickReplies.includes('ยกเลิก')
       );
     } else {
       setDynamicQR([]);
       setConfirmMode(false);
     }
 
+    // ตรวจเมนูตัวเลข (ข้ามถ้า reply เป็น HTML)
     if (!html) {
       let minSel = 1;
       let maxSel = 0;
@@ -598,6 +589,7 @@ export default function Page() {
         setMenuMap({});
       }
 
+      // ตรวจ state รอ UID (เฉพาะข้อความธรรมดา)
       if (/กรุณาพิมพ์\s*UID\b/i.test(reply)) {
         setAwaitingUID(true);
         setPendingNumberRange(null);
@@ -609,6 +601,7 @@ export default function Page() {
         setAwaitingUID(false);
       }
     } else {
+      // เป็น HTML: ไม่ใช่ขั้นเมนู/UID
       setPendingNumberRange(null);
       setMenuMap({});
     }
@@ -692,22 +685,27 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    if (/^ยกเลิก$/i.test(original)) {
-      setAwaitingUID(false);
-      setPendingNumberRange(null);
-      setMenuMap({});
-      setConfirmMode(false);
-      setShowPaidButton(false);
-
-      const data = await callAPI('ยกเลิก', loggedInUser);
+    if (awaitingUID && /^\d{6,12}$/.test(original)) {
+      const data = await robustSendUID(original, loggedInUser);
       pushBot(data);
       return;
+    }
+
+    if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
+      const n = parseInt(original, 10);
+      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
+        const title = menuMap[n];
+        const data = await robustSendPackage(title, n, loggedInUser);
+        pushBot(data);
+        return;
+      }
     }
 
     const nluRes = await nlu(original);
     if (nluRes.intent === 'confirm') { await processConfirm(); return; }
     if (nluRes.intent === 'cancel') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
+    // เปิดเมนูดูเซ็ต (ไม่ทำ OCR/อัปโหลดแล้ว)
     if (nluRes.intent === 'artifact_gi') {
       const open = await callAPI('ดู artifact genshin impact', loggedInUser);
       pushBot(open);
@@ -731,22 +729,8 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    if (value.trim() === 'ยกเลิก') {
-      setAwaitingUID(false);
-      setPendingNumberRange(null);
-      setMenuMap({});
-      setConfirmMode(false);
-      setShowPaidButton(false);
-
-      const data = await callAPI('ยกเลิก', loggedInUser);
-      pushBot(data);
-      return;
-    }
-
-    if (value.trim() === 'ยืนยัน') {
-      await processConfirm();
-      return;
-    }
+    if (value.trim() === 'ยืนยัน') { await processConfirm(); return; }
+    if (value.trim() === 'ยกเลิก') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
 
     const data = await callAPI(value, loggedInUser);
     pushBot(data);
@@ -1038,16 +1022,11 @@ export default function Page() {
                   const isConfirm = confirmMode && value.trim() === 'ยืนยัน';
                   const isCancel = confirmMode && value.trim() === 'ยกเลิก';
                   const color = confirmMode ? (isConfirm ? 'green' : isCancel ? 'red' : 'gray') : 'indigo';
-
-                  const base =
-                    /^\d+$/.test(value)
+                  const label = /^\d+$/.test(value)
+                    ? value
+                    : dynamicQR.length
                       ? value
-                      : dynamicQR.length
-                        ? value
-                        : defaults.find((d) => d.value === value)?.label || value;
-
-                  const label = prettifyCharHashLabel(base);
-
+                      : defaults.find((d) => d.value === value)?.label || value;
                   return (
                     <GlassPill key={`qr-${index}-${value}`} color={color as any} onClick={() => handleQuickReply(value)}>
                       {label}
