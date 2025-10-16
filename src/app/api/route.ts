@@ -1,6 +1,9 @@
 // src/app/api/route.ts
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
+import giMap from "@/data/gi_characters.json";
+import hsrMap from "@/data/hsr_characters.json";
+
 
 /* ===================== DB Pool ===================== */
 // ⭐️ แก้ไข: ดึงค่าทั้งหมดจาก process.env
@@ -48,6 +51,7 @@ type Session = {
     details?: Record<string, any>;
     selectedId?: number;
     chipMap?: Record<string, string>; // << เพิ่ม: map label -> ID
+    nameById?: Record<string, string>;
   };
 
   lastAdviceError?: string | null;
@@ -151,6 +155,16 @@ function iconPath(game: GameKey, rawPiece: string) {
   const words = keyizeHSR(rawPiece).split("_").map(capFirst);
   const name = words.join("_");
   return `${HSR_CATE_BASE}${name}.png`;
+}
+
+// + helper: เอาชื่อจากไฟล์แม็ปก่อน แล้วค่อย fallback
+function charName(game: GameKey, id?: number, fallback?: string): string {
+  const key = String(id ?? "");
+  if (!key) return fallback || "";
+  if (game === "gi") {
+    return (giMap as Record<string, string>)[key] || fallback || `#${id}`;
+  }
+  return (hsrMap as Record<string, string>)[key] || fallback || `#${id}`;
 }
 
 type AnyGear = {
@@ -525,19 +539,27 @@ ${nameLine}UID: ${uid}
       s.enka.characters = j.characters as { id: number; name: string; level: number }[];
       s.enka.details = j.details as Record<string, any>;
       s.enka.chipMap = Object.create(null); // << เตรียมเก็บ label -> ID
+      s.enka.nameById = Object.create(null);
 
       const chips = (s.enka.characters || [])
-        .slice(0, 12)
-        .map((c) => {
-          const fromDetail = s.enka?.details?.[String(c.id)];
-          // 💡 ปรับปรุง: ใช้ชื่อจาก detail/c.name/ID เป็นชื่อสำรอง
-          const rawName: string = (fromDetail && fromDetail.name) || c.name || `ID ${c.id}`;
-          const showName = rawName.replace(/[\(\)]/g, '').trim(); 
-          
-          const label = `${showName} (lv.${c.level})`; // 💡 ใช้ชื่อตัวละคร (lv.XX) 
-          s.enka!.chipMap![label] = String(c.id); // ⭐️ เก็บ label -> ID ตัวละคร
-          return label;
-        });
+      .slice(0, 12)
+      .map((c) => {
+        const fromDetail = s.enka?.details?.[String(c.id)];
+        // + ใช้ชื่อจากไฟล์แม็ปเป็นหลัก, ตามด้วย detail.name, แล้วค่อย c.name
+        const resolved = charName(
+          (s.enka?.game as GameKey) || "gi",
+          c.id,
+          (fromDetail && fromDetail.name) || c.name
+        );
+        const showName = resolved.replace(/[\(\)]/g, "").trim();
+        const label = `${showName} (lv.${c.level})`;
+
+        // + เก็บ map เพิ่มเติมเอาไว้ใช้ตอนขั้นถัดไป
+        s.enka!.chipMap![label] = String(c.id);
+        s.enka!.nameById![String(c.id)] = showName;
+
+        return label;
+      });
 
       return NextResponse.json({
         reply: `กำลังดึงข้อมูลจาก Enka... สำเร็จแล้ว!
@@ -617,6 +639,19 @@ ${nameLine}UID: ${uid}
       });
     }
 
+    // === ตั้งต้นก่อนคิวรี DB: resolve ชื่อจริงจากหลายแหล่ง ===
+const idStr = String(target.id);
+const gameResolved = (s.enka?.game || "gi") as GameKey;
+
+// ใช้ชื่อที่มั่นคง: nameById -> detail.name -> target.name -> แผนที่ id -> #id
+const resolvedName =
+  s.enka?.nameById?.[idStr] ||
+  (details[idStr]?.name as string | undefined) ||
+  target.name ||
+  charName(gameResolved, target.id) ||
+  `#${target.id}`;
+
+
     const d = details[String(target.id)] as {
       name?: string;
       artifacts?: Array<{
@@ -662,29 +697,29 @@ ${nameLine}UID: ${uid}
         level?: number;
       }>;
     };
-
-    /* ==== “ชุดที่แนะนำ” จาก DB ==== */
-    let setRows: RowDataPacket[] = [];
-    try {
-      const raw = d?.name || target.name;
-      const q = `%${raw}%`;
-      let [rows] = await db.query<RowDataPacket[]>(
-        `SELECT set_short FROM character_sets WHERE game = ? AND character_name = ?`,
-        [s.enka?.game || "gi", raw]
-      );
-      if (!rows || rows.length === 0) {
-        [rows] = await db.query<RowDataPacket[]>(
-          `SELECT set_short FROM character_sets
-           WHERE game = ?
-             AND (character_name LIKE ? OR REPLACE(LOWER(character_name),' ','') = REPLACE(LOWER(?),' ','')) 
-           LIMIT 4`,
-          [s.enka?.game || "gi", q, raw]
-        );
-      }
-      setRows = rows || [];
-    } catch {
-      setRows = [];
-    }
+    
+    /* ==== “ชุดที่แนะนำ” จาก DB ==== */
+    let setRows: RowDataPacket[] = [];
+    try {
+      const raw = resolvedName;                // <-- ใช้ชื่อที่ resolve แล้ว
+      const q = `%${raw}%`;
+      let [rows] = await db.query<RowDataPacket[]>(
+        `SELECT set_short FROM character_sets WHERE game = ? AND character_name = ?`,
+        [s.enka?.game || "gi", raw]
+      );
+      if (!rows || rows.length === 0) {
+        [rows] = await db.query<RowDataPacket[]>(
+          `SELECT set_short FROM character_sets
+          WHERE game = ?
+            AND (character_name LIKE ? OR REPLACE(LOWER(character_name),' ','') = REPLACE(LOWER(?),' ','')) 
+          LIMIT 4`,
+          [s.enka?.game || "gi", q, raw]
+        );
+      }
+      setRows = rows || [];
+    } catch {
+      setRows = [];
+    }
 
     function shortToIconsHTML(combo: string): string {
       if (!combo) return "";
@@ -752,7 +787,7 @@ ${nameLine}UID: ${uid}
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : d?.relics || []) as AnyGear[];
 
     const gearHtml = renderGearHTML(listForShow, game);
-    const shownName = d?.name || target.name || `#${target.id}`;
+    const shownName = resolvedName;
     const headHtml = `<div><b>ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})</b></div>`;
     const recHeadHtml = `<div style="margin-top:8px"><b>Artifact/Relic ที่ฐานข้อมูลแนะนำ:</b></div>`;
     const askText = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
