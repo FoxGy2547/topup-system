@@ -1070,11 +1070,7 @@ export default function Page() {
                   const label = prettifyCharHashLabel(base);
 
                   return (
-                    <GlassPill
-                      key={`qr-${index}-${value}`}
-                      color={color as any}
-                      onClick={() => handleQuickReply(label)} // ⬅ ส่ง label ที่แปลงแล้ว (เช่น Firefly) ไม่ใช่ค่าเดิมที่เป็น #1310
-                    >
+                    <GlassPill key={`qr-${index}-${value}`} color={color as any} onClick={() => handleQuickReply(value)}>
                       {label}
                     </GlassPill>
                   );
