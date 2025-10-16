@@ -528,7 +528,7 @@ ${nameLine}UID: ${uid}
         .map((c) => {
           const fromDetail = s.enka?.details?.[String(c.id)];
           const showName: string = (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
-          const label = `${showName} (lv.${c.level})`;
+          const label = `${showName}`;
           s.enka!.chipMap![label] = showName; // << เก็บ mapping
           return label;
         });
@@ -586,8 +586,8 @@ ${nameLine}UID: ${uid}
 
     if (!target) {
       const chips = chars.slice(0, 12).map((c) => {
-        const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
-        const label = `${nm} (lv.${c.level})`;
+        const nm = details[String(c.id)]?.name || c.name;
+        const label = `${nm}`;
         // เผื่อผู้ใช้ย้อนกลับมาใหม่ ให้มี map พร้อมใช้
         if (!s.enka?.chipMap) s.enka = { ...(s.enka || {}), chipMap: Object.create(null) };
         s.enka!.chipMap![label] = nm;
