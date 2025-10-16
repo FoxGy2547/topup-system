@@ -2,38 +2,14 @@
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
 
-function required(name: string, val: string | undefined) {
-  if (!val || !val.trim()) throw new Error(`Missing env: ${name}`);
-  return val;
-}
-
-const {
-  DB_URL,
-  DB_HOST,
-  DB_PORT,
-  DB_USER,
-  DB_PASS,
-  DB_NAME,
-} = process.env;
-
-const db = (() => {
-  if (DB_URL && DB_URL.trim()) {
-    // ใช้ connection string ตรง ๆ
-    return mysql.createPool(DB_URL);
-  }
-
-  // ใช้แบบแยกตัวแปร
-  return mysql.createPool({
-    host: required("DB_HOST", DB_HOST),
-    port: DB_PORT ? Number(DB_PORT) : 3306,
-    user: required("DB_USER", DB_USER),
-    password: required("DB_PASS", DB_PASS),
-    database: required("DB_NAME", DB_NAME),
-    connectionLimit: 10,
-    // ถ้าต้องใช้ SSL (เช่น PlanetScale/บางผู้ให้บริการ) ให้เปิดคอมเมนต์นี้
-    // ssl: { rejectUnauthorized: true },
-  });
-})();
+/* ===================== DB Pool ===================== */
+const db = mysql.createPool({
+  host: process.env.DB_HOST || "sql12.freesqldatabase.com",
+  user: process.env.DB_USER || "sql12796984",
+  password: process.env.DB_PASS || "n72gyyb4KT",
+  database: process.env.DB_NAME || "sql12796984",
+  connectionLimit: 10,
+});
 
 /* ===================== Types ===================== */
 type GameKey = "gi" | "hsr";
@@ -57,7 +33,7 @@ type Session = {
   selectedName?: string;
   selectedPrice?: number;
   uid?: string;
-  uidName?: string; // << เพิ่ม: เก็บชื่อ (nickname) ที่ดึงจาก Enka
+  uidName?: string; // เก็บชื่อ (nickname) ที่ดึงจาก Enka
   productList?: Array<{ name: string; price: number }>;
 
   // enka
@@ -68,6 +44,7 @@ type Session = {
     characters?: { id: number; name: string; level: number }[];
     details?: Record<string, any>;
     selectedId?: number;
+    chipMap?: Record<string, string>; // << เพิ่ม: map label -> ชื่อ
   };
 
   lastAdviceError?: string | null;
@@ -89,31 +66,6 @@ function clientKey(req: Request, username?: string, sessionId?: string) {
     "0.0.0.0";
   const ua = (req.headers.get("user-agent") || "").slice(0, 80);
   return `ipua:${ip}:${ua}`;
-}
-
-/* ---------- Chip helpers ---------- */
-function parseChipLabel(s: string) {
-  // รับ "Saber (lv.80)" หรือ "#1310 (lv.80)" หรือแม้แต่ "Saber"
-  const m = s.match(/^\s*(.*?)\s*\(lv\.\s*\d+\)\s*$/i);
-  const raw = (m ? m[1] : s).trim();
-  const idm = raw.match(/^#?(\d{3,9})$/);
-  return {
-    label: raw,
-    id: idm ? Number(idm[1]) : null,
-    name: idm ? null : raw,
-  };
-}
-function resolveCharName(
-  game: GameKey,
-  id: number,
-  details?: Record<string, any>,
-  fallbackLabel?: string,
-  fallbackName?: string
-) {
-  const fromDetails = details?.[String(id)]?.name as string | undefined;
-  const first = (fromDetails || fallbackLabel || fallbackName || "").trim();
-  if (first && !/^#?\d+$/.test(first)) return first; // ได้ชื่อจริงแล้ว
-  return `#${id}`; // สุดท้ายจริง ๆ ค่อยเป็น #id
 }
 
 /* ===================== Utils ===================== */
@@ -223,13 +175,18 @@ function renderGearHTML(list: AnyGear[], game: GameKey): string {
   if (!Array.isArray(list) || list.length === 0) return "<i>(ไม่พบชิ้นส่วน)</i>";
 
   const filtered = list.filter((g) =>
-    game === "gi" ? (ORDER_GI as readonly string[]).includes(g.piece) : (ORDER_HSR as readonly string[]).includes(keyizeHSR(g.piece))
+    game === "gi"
+      ? (ORDER_GI as readonly string[]).includes(g.piece)
+      : (ORDER_HSR as readonly string[]).includes(keyizeHSR(g.piece))
   );
   const sorted = [...filtered].sort((a, b) => {
     if (game === "gi") {
       return (ORDER_GI as readonly string[]).indexOf(a.piece) - (ORDER_GI as readonly string[]).indexOf(b.piece);
     }
-    return (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(a.piece)) - (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(b.piece));
+    return (
+      (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(a.piece)) -
+      (ORDER_HSR as readonly string[]).indexOf(keyizeHSR(b.piece))
+    );
   });
 
   const blocks: string[] = [];
@@ -238,10 +195,11 @@ function renderGearHTML(list: AnyGear[], game: GameKey): string {
     const piece = escapeHtml(displayPiece(game, g.piece));
     const level = typeof g.level === "number" ? ` [+${g.level}]` : "";
     const main = escapeHtml(normalizeColons(g.main) || "-");
-    const subs =
-      g.subs?.length
-        ? `<ul style="margin:0;padding-left:1.2em">${g.subs.map((s) => `<li>${escapeHtml(normalizeColons(s))}</li>`).join("")}</ul>`
-        : "";
+    const subs = g.subs?.length
+      ? `<ul style="margin:0;padding-left:1.2em">${g.subs
+          .map((s) => `<li>${escapeHtml(normalizeColons(s))}</li>`)
+          .join("")}</ul>`
+      : "";
 
     blocks.push(
       [
@@ -344,7 +302,7 @@ function sessionsReset(s: Session) {
   s.selectedName = undefined;
   s.selectedPrice = undefined;
   s.uid = undefined;
-  s.uidName = undefined; // << ล้างชื่อด้วย
+  s.uidName = undefined;
   s.productList = undefined;
   s.enka = undefined;
   s.lastAdviceError = null;
@@ -472,7 +430,7 @@ ${renderProductList(list)}
     const price = s.selectedPrice ?? 0;
     const amount = parseAmountToReceive(game, pkg);
 
-    // << ดึงชื่อจาก Enka (ถ้าดึงไม่ได้จะเงียบ ๆ แล้วไปต่อ)
+    // ดึงชื่อจาก Enka (ถ้าดึงไม่ได้จะเงียบ ๆ แล้วไปต่อ)
     try {
       const base = new URL(req.url).origin;
       const enkaUrl = game === "hsr" ? `${base}/api/enka-hsr` : `${base}/api/enka-gi`;
@@ -483,7 +441,7 @@ ${renderProductList(list)}
       });
       const j = await r.json().catch(() => ({}));
       if (j?.ok && j?.player) s.uidName = String(j.player);
-    } catch { }
+    } catch {}
 
     s.state = "confirm_order";
 
@@ -563,13 +521,16 @@ ${nameLine}UID: ${uid}
       s.enka.player = j.player as string;
       s.enka.characters = j.characters as { id: number; name: string; level: number }[];
       s.enka.details = j.details as Record<string, any>;
+      s.enka.chipMap = Object.create(null); // << เตรียมเก็บ label -> name
 
       const chips = (s.enka.characters || [])
         .slice(0, 12)
         .map((c) => {
           const fromDetail = s.enka?.details?.[String(c.id)];
           const showName: string = (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
-          return `${showName}`;
+          const label = `${showName} (lv.${c.level})`;
+          s.enka!.chipMap![label] = showName; // << เก็บ mapping
+          return label;
         });
 
       return NextResponse.json({
@@ -597,7 +558,13 @@ ${nameLine}UID: ${uid}
     const details = s.enka?.details || {};
     const game = (s.enka?.game || "gi") as GameKey;
 
-    const idMatch = game === "hsr" ? text.match(/\b#?(\d{3,6})\b/) : text.match(/\b#?(\d{5,9})\b/);
+    // แปลงข้อความที่รับมาให้เป็น "ชื่อ" ถ้าเป็นป้ายปุ่ม
+    const rawUser = text.trim();
+    const mappedFromChip = s.enka?.chipMap?.[rawUser];
+    const userText = mappedFromChip || rawUser;
+
+    // เดิม: รองรับการพิมพ์เป็น id ด้วย
+    const idMatch = game === "hsr" ? userText.match(/\b#?(\d{3,6})\b/) : userText.match(/\b#?(\d{5,9})\b/);
 
     let target: { id: number; name: string; level: number } | null = null;
 
@@ -611,15 +578,20 @@ ${nameLine}UID: ${uid}
           const nameFromDetail = details[String(c.id)]?.name as string | undefined;
           const nm = (nameFromDetail || c.name || "").trim();
           if (!nm) return false;
+          // ใช้ข้อความที่ปรับจากปุ่มแล้ว (userText)
           const re = new RegExp(`\\b${nm.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
-          return re.test(text);
+          return re.test(userText);
         }) || null;
     }
 
     if (!target) {
       const chips = chars.slice(0, 12).map((c) => {
         const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
-        return `${nm}`;
+        const label = `${nm} (lv.${c.level})`;
+        // เผื่อผู้ใช้ย้อนกลับมาใหม่ ให้มี map พร้อมใช้
+        if (!s.enka?.chipMap) s.enka = { ...(s.enka || {}), chipMap: Object.create(null) };
+        s.enka!.chipMap![label] = nm;
+        return label;
       });
       return NextResponse.json({
         reply: "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
@@ -701,7 +673,7 @@ ${nameLine}UID: ${uid}
 
       const gameFolder = (s.enka?.game || "gi") === "gi" ? "gi" : "hsr";
 
-      // -------- GI: เดิมใช้ "/" แยกเซ็ตอยู่แล้ว ----------
+      // GI: ใช้ "/" แยกเซ็ต
       if (gameFolder === "gi") {
         const codes = combo.split("/").map((s) => s.trim()).filter(Boolean);
         if (!codes.length) return "";
@@ -711,13 +683,8 @@ ${nameLine}UID: ${uid}
         return `<span style="display:inline-block;vertical-align:middle">${imgs}</span>`;
       }
 
-      // -------- HSR: รองรับรูปแบบใหม่ Cavern-Planar ----------
-      // ตัวอย่างใน DB เก่า ๆ: 'GoBS-PCCE', 'GoBS-SSS/G', 'Sth-PCCE/' ฯลฯ
-      // เราจะอ่านเฉพาะ "ซีกซ้ายของ '-'" เป็น Cavern (4 ชิ้น)
-      // และ "ซีกขวา" เป็น Planar (2 ชิ้น) โดยตัดเศษหลัง '/' ทิ้ง
+      // HSR: รองรับ Cavern-Planar "A-B/..." → ซีกซ้าย 4, ขวา 2
       const raw = combo.trim();
-
-      // ตัดเศษที่เป็นคำอธิบายต่อท้ายเช่น '/G' หรือ '/' ออกให้หมดก่อน
       const chopTail = (s: string) => s.split("/")[0]?.trim() || "";
 
       let cav = "";
@@ -728,7 +695,6 @@ ${nameLine}UID: ${uid}
         cav = chopTail(left);
         plan = chopTail(right);
       } else {
-        // กรณีไม่มีขีด '-' ก็ถือว่าให้โชว์รูปตามเดิม (โค้ดเก่ายังเจอแบบนี้)
         cav = chopTail(raw);
       }
 
@@ -754,7 +720,6 @@ ${nameLine}UID: ${uid}
       const combo = String((r as any).set_short || "");
       const icons = shortToIconsHTML(combo);
       if (icons) {
-        // NB: ใช้ &nbsp; หลังจุด เพื่อกันการขึ้นบรรทัด และห่อ <span> ไว้แล้วในฟังก์ชัน
         recLinesHtml.push(`<div>•&nbsp;${icons}</div>`);
       }
     }
@@ -768,16 +733,17 @@ ${nameLine}UID: ${uid}
     const listForShow =
       (Array.isArray(d?.artifacts) && d!.artifacts!.length ? d!.artifacts! : d?.relics || []) as AnyGear[];
 
-    // ✅ ใช้ HTML ใน reply โดยตรง (ไม่มี replyHtml แล้ว)
     const gearHtml = renderGearHTML(listForShow, game);
     const shownName = d?.name || target.name || `#${target.id}`;
     const headHtml = `<div><b>ของที่สวมใส่ของ ${shownName} (เลเวล ${target.level})</b></div>`;
     const recHeadHtml = `<div style="margin-top:8px"><b>Artifact/Relic ที่ฐานข้อมูลแนะนำ:</b></div>`;
     const askText = `ต้องการ “วิเคราะห์สเตตด้วย Gemini” ไหมคะ?`;
-    const htmlPayload = `${headHtml}${gearHtml}${recHeadHtml}${recSetsHtml}<div style="margin-top:8px">${escapeHtml(askText)}</div>`;
+    const htmlPayload = `${headHtml}${gearHtml}${recHeadHtml}${recSetsHtml}<div style="margin-top:8px">${escapeHtml(
+      askText
+    )}</div>`;
 
     return NextResponse.json({
-      reply: htmlPayload, // <<-- ใช้ตัวนี้ตัวเดียว
+      reply: htmlPayload,
       quickReplies: ["วิเคราะห์สเตตด้วย Gemini", "ยกเลิก"],
     });
   }
@@ -817,20 +783,20 @@ ${nameLine}UID: ${uid}
       const body =
         game === "gi"
           ? {
-            game: "gi",
-            mode: "from-enka",
-            character: d.name || `#${id}`,
-            artifacts: d.artifacts || [],
-            totalsFromGear: d.totalsFromGear || {},
-            shownTotals: d.shownTotals || {},
-          }
+              game: "gi",
+              mode: "from-enka",
+              character: d.name || `#${id}`,
+              artifacts: d.artifacts || [],
+              totalsFromGear: d.totalsFromGear || {},
+              shownTotals: d.shownTotals || {},
+            }
           : {
-            game: "hsr",
-            mode: "from-enka",
-            character: d.name || `#${id}`,
-            artifacts: d.relics || [],
-            shownTotals: d.shownTotals || {},
-          };
+              game: "hsr",
+              mode: "from-enka",
+              character: d.name || `#${id}`,
+              artifacts: d.relics || [],
+              shownTotals: d.shownTotals || {},
+            };
 
       const r = await fetch(`${base}/api/advice`, {
         method: "POST",
@@ -878,16 +844,16 @@ ${nameLine}UID: ${uid}
     s.state === "waiting_enka_uid"
       ? "ขอ UID"
       : s.state === "waiting_pick_character"
-        ? "เลือกตัวละคร"
-        : s.state === "picked_character"
-          ? "วิเคราะห์สเตต"
-          : s.state === "waiting_gi" || s.state === "waiting_hsr"
-            ? "เลือกแพ็ก"
-            : s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr"
-              ? "ขอ UID"
-              : s.state === "confirm_order"
-                ? "ยืนยันคำสั่งซื้อ"
-                : "ดำเนินการ";
+      ? "เลือกตัวละคร"
+      : s.state === "picked_character"
+      ? "วิเคราะห์สเตต"
+      : s.state === "waiting_gi" || s.state === "waiting_hsr"
+      ? "เลือกแพ็ก"
+      : s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr"
+      ? "ขอ UID"
+      : s.state === "confirm_order"
+      ? "ยืนยันคำสั่งซื้อ"
+      : "ดำเนินการ";
 
   return NextResponse.json({
     reply: `เรากำลังอยู่ที่ขั้น “${step}” อยู่เลยนะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลย~`,
@@ -938,7 +904,7 @@ function simpleFallbackAdviceHSR(
   if (cd < 140) lacks.push(`CD ต่ำ (~${cd.toFixed(0)}%) → หา CD จากซับหรือเปลี่ยนหมวก CR/CD ตามที่ขาด`);
   if (err < 100) lacks.push(`ERR ต่ำ (~${err.toFixed(0)}%) → หา ERR จากเชือก/ซับ ให้แตะ 100–120%`);
   if (spd < 120) lacks.push(`SPD ต่ำ (~${spd.toFixed(0)}) → พยายามแตะ breakpoint 120/134/147 ตามทีม`);
-  if (ehr < 67) lacks.push(`EHR ต่ำ (~${ehr.toFixed(0)}%) → สำหรับสายดีบัฟควร ≥ ~67%`);
+  if (ehr < 67) lacks.push(`EHR ต่ำ (~${ehr.toFixed(0)}%) สำหรับสายดีบัฟควร ≥ ~67%`);
 
   return lacks.length ? lacks.join("\n") : "ค่าสรุปพื้นฐานถึงเกณฑ์ทั่วไปแล้ว เน้นรีโรลซับค่า CR/CD/SPD ให้สมดุลตามบทบาท";
 }
