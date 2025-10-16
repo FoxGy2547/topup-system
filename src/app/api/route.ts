@@ -434,7 +434,7 @@ ${renderProductList(list)}
       });
       const j = await r.json().catch(() => ({}));
       if (j?.ok && j?.player) s.uidName = String(j.player);
-    } catch {}
+    } catch { }
 
     s.state = "confirm_order";
 
@@ -649,19 +649,65 @@ ${nameLine}UID: ${uid}
 
     function shortToIconsHTML(combo: string): string {
       if (!combo) return "";
-      const codes = combo.split("/").map((s) => s.trim()).filter(Boolean);
-      if (codes.length === 0) return "";
-      const folder = (s.enka?.game || "gi") === "gi" ? "gi" : "hsr";
-      return codes
-        .map((c) => `<img src="/pic/${folder}/${c}.png" alt="${c}" width="50" height="50" />`)
-        .join("");
+
+      const gameFolder = (s.enka?.game || "gi") === "gi" ? "gi" : "hsr";
+
+      // -------- GI: เดิมใช้ "/" แยกเซ็ตอยู่แล้ว ----------
+      if (gameFolder === "gi") {
+        const codes = combo.split("/").map((s) => s.trim()).filter(Boolean);
+        if (!codes.length) return "";
+        const imgs = codes
+          .map((c) => `<img src="/pic/${gameFolder}/${c}.png" alt="${c}" width="50" height="50" />`)
+          .join("");
+        return `<span style="display:inline-block;vertical-align:middle">${imgs}</span>`;
+      }
+
+      // -------- HSR: รองรับรูปแบบใหม่ Cavern-Planar ----------
+      // ตัวอย่างใน DB เก่า ๆ: 'GoBS-PCCE', 'GoBS-SSS/G', 'Sth-PCCE/' ฯลฯ
+      // เราจะอ่านเฉพาะ "ซีกซ้ายของ '-'" เป็น Cavern (4 ชิ้น)
+      // และ "ซีกขวา" เป็น Planar (2 ชิ้น) โดยตัดเศษหลัง '/' ทิ้ง
+      const raw = combo.trim();
+
+      // ตัดเศษที่เป็นคำอธิบายต่อท้ายเช่น '/G' หรือ '/' ออกให้หมดก่อน
+      const chopTail = (s: string) => s.split("/")[0]?.trim() || "";
+
+      let cav = "";
+      let plan = "";
+
+      if (raw.includes("-")) {
+        const [left, right] = raw.split("-", 2);
+        cav = chopTail(left);
+        plan = chopTail(right);
+      } else {
+        // กรณีไม่มีขีด '-' ก็ถือว่าให้โชว์รูปตามเดิม (โค้ดเก่ายังเจอแบบนี้)
+        cav = chopTail(raw);
+      }
+
+      const parts: string[] = [];
+      if (cav) {
+        parts.push(
+          `<img src="/pic/hsr/${cav}.png" alt="${cav} (4 ชิ้น)" width="50" height="50" title="${cav} (4 ชิ้น)" />`
+        );
+      }
+      if (plan) {
+        parts.push(
+          `<img src="/pic/hsr/${plan}.png" alt="${plan} (2 ชิ้น)" width="50" height="50" title="${plan} (2 ชิ้น)" />`
+        );
+      }
+
+      if (!parts.length) return "";
+      const imgs = parts.join("");
+      return `<span style="display:inline-block;vertical-align:middle">${imgs}</span>`;
     }
 
     const recLinesHtml: string[] = [];
     for (const r of setRows) {
       const combo = String((r as any).set_short || "");
       const icons = shortToIconsHTML(combo);
-      if (icons) recLinesHtml.push(`<div>• ${icons}</div>`);
+      if (icons) {
+        // NB: ใช้ &nbsp; หลังจุด เพื่อกันการขึ้นบรรทัด และห่อ <span> ไว้แล้วในฟังก์ชัน
+        recLinesHtml.push(`<div>•&nbsp;${icons}</div>`);
+      }
     }
     const recSetsHtml = recLinesHtml.join("") || `<div>• (ไม่พบข้อมูลในฐานข้อมูล)</div>`;
 
@@ -722,20 +768,20 @@ ${nameLine}UID: ${uid}
       const body =
         game === "gi"
           ? {
-              game: "gi",
-              mode: "from-enka",
-              character: d.name || `#${id}`,
-              artifacts: d.artifacts || [],
-              totalsFromGear: d.totalsFromGear || {},
-              shownTotals: d.shownTotals || {},
-            }
+            game: "gi",
+            mode: "from-enka",
+            character: d.name || `#${id}`,
+            artifacts: d.artifacts || [],
+            totalsFromGear: d.totalsFromGear || {},
+            shownTotals: d.shownTotals || {},
+          }
           : {
-              game: "hsr",
-              mode: "from-enka",
-              character: d.name || `#${id}`,
-              artifacts: d.relics || [],
-              shownTotals: d.shownTotals || {},
-            };
+            game: "hsr",
+            mode: "from-enka",
+            character: d.name || `#${id}`,
+            artifacts: d.relics || [],
+            shownTotals: d.shownTotals || {},
+          };
 
       const r = await fetch(`${base}/api/advice`, {
         method: "POST",
@@ -783,16 +829,16 @@ ${nameLine}UID: ${uid}
     s.state === "waiting_enka_uid"
       ? "ขอ UID"
       : s.state === "waiting_pick_character"
-      ? "เลือกตัวละคร"
-      : s.state === "picked_character"
-      ? "วิเคราะห์สเตต"
-      : s.state === "waiting_gi" || s.state === "waiting_hsr"
-      ? "เลือกแพ็ก"
-      : s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr"
-      ? "ขอ UID"
-      : s.state === "confirm_order"
-      ? "ยืนยันคำสั่งซื้อ"
-      : "ดำเนินการ";
+        ? "เลือกตัวละคร"
+        : s.state === "picked_character"
+          ? "วิเคราะห์สเตต"
+          : s.state === "waiting_gi" || s.state === "waiting_hsr"
+            ? "เลือกแพ็ก"
+            : s.state === "waiting_uid_gi" || s.state === "waiting_uid_hsr"
+              ? "ขอ UID"
+              : s.state === "confirm_order"
+                ? "ยืนยันคำสั่งซื้อ"
+                : "ดำเนินการ";
 
   return NextResponse.json({
     reply: `เรากำลังอยู่ที่ขั้น “${step}” อยู่เลยนะ ช่วยตอบให้ตรงขั้น หรือพิมพ์ ‘ยกเลิก/เปลี่ยนใจ’ เพื่อเริ่มใหม่ได้เลย~`,
