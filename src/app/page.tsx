@@ -104,9 +104,9 @@ async function nlu(text: string): Promise<NluResp> {
 
 /* ====================== OCR: Slip ====================== */
 const AMT_KEY_POS = [
-  'ยอดชำระ','ยอดสุทธิ','ยอดรวม','รวมทั้งสิ้น','สุทธิ','จำนวนเงิน','จำนวน','รวม','total','amount','paid','payment',
+  'ยอดชำระ', 'ยอดสุทธิ', 'ยอดรวม', 'รวมทั้งสิ้น', 'สุทธิ', 'จำนวนเงิน', 'จำนวน', 'รวม', 'total', 'amount', 'paid', 'payment',
 ];
-const CURRENCY_HINT = ['บาท','บาทถ้วน','thb','฿'];
+const CURRENCY_HINT = ['บาท', 'บาทถ้วน', 'thb', '฿'];
 
 function cleanSlipText(s: string) {
   return toArabic(s || '')
@@ -284,7 +284,7 @@ function sanitizeBotHtml(src: string) {
         if (sameHost || EXTRA_IMG_HOST_WHITELIST.has(u.hostname)) {
           return `<a href="${href}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
         }
-      } catch {}
+      } catch { }
       return inner;
     }
     // allow relative
@@ -320,7 +320,7 @@ function sanitizeBotHtml(src: string) {
           const h = get('height', '30');
           return `<img src="${srcUrl}" alt="${alt}" width="${w}" height="${h}" style="vertical-align:middle;margin-right:6px" />`;
         }
-      } catch {}
+      } catch { }
     }
     return ''; // ไม่ผ่านเกณฑ์
   });
@@ -460,7 +460,7 @@ export default function Page() {
       const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
       const j = await r.json();
       if (j?.ok) setBalance(Number(j.balance) || 0);
-    } catch {}
+    } catch { }
   };
   const VIS_POLL_MS = 20_000;
   const HIDDEN_POLL_MS = 120_000;
@@ -551,17 +551,20 @@ export default function Page() {
   const pushBot = (data: ApiResponse) => {
     if (!data.reply) return;
     const reply = data.reply || '';
-
-    // ✅ ถ้า reply เป็น HTML ให้ใส่ลง field html ด้วย
     const html = looksLikeHtml(reply) ? reply : undefined;
-
     const hasPayText = /กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ/.test(reply);
     const enforcedQR = data.paymentRequest || hasPayText ? '/pic/qr/qr.jpg' : undefined;
 
-    setMessages((p) => [
-      ...p,
-      { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets } as ChatMessage,
-    ]);
+    setMessages((p) => [...p, { role: 'bot', text: reply, html, imageUrl: enforcedQR, sets: data.sets }]);
+
+    // ⬇️ ถ้าเป็นข้อความยกเลิก/เมนูหลัก ให้รีเซ็ต state ปุ่ม + placeholder
+    if (/(ยกเลิกแล้วค่ะ|เมนูหลัก|เริ่มใหม่)/i.test(reply)) {
+      setAwaitingUID(false);
+      setPendingNumberRange(null);
+      setMenuMap({});
+      setConfirmMode(false);
+      setShowPaidButton(false);
+    }
 
     setShowPaidButton(!!enforcedQR);
     if (enforcedQR) setPaidSoFar(0);
@@ -571,8 +574,8 @@ export default function Page() {
       setDynamicQR(data.quickReplies);
       setConfirmMode(
         data.quickReplies.length === 2 &&
-          data.quickReplies.includes('ยืนยัน') &&
-          data.quickReplies.includes('ยกเลิก')
+        data.quickReplies.includes('ยืนยัน') &&
+        data.quickReplies.includes('ยกเลิก')
       );
     } else {
       setDynamicQR([]);
@@ -664,7 +667,7 @@ export default function Page() {
         const r = await fetch(`/api/balance?username=${encodeURIComponent(loggedInUser)}`);
         const j = await r.json();
         have = j?.ok ? Number(j.balance || 0) : 0;
-      } catch {}
+      } catch { }
 
       const use = Math.min(have, expected);
       const remain = Math.max(0, Number((expected - use).toFixed(2)));
@@ -705,20 +708,17 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(original)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    if (awaitingUID && /^\d{6,12}$/.test(original)) {
-      const data = await robustSendUID(original, loggedInUser);
+    // ⬇️ รีเซ็ตเมื่อพิมพ์ "ยกเลิก"
+    if (/^ยกเลิก$/i.test(original)) {
+      setAwaitingUID(false);
+      setPendingNumberRange(null);
+      setMenuMap({});
+      setConfirmMode(false);
+      setShowPaidButton(false);
+
+      const data = await callAPI('ยกเลิก', loggedInUser);
       pushBot(data);
       return;
-    }
-
-    if (/^\d{1,3}$/.test(original) && (pendingNumberRange || Object.keys(menuMap).length)) {
-      const n = parseInt(original, 10);
-      if ((!pendingNumberRange || (n >= pendingNumberRange.min && n <= pendingNumberRange.max)) && menuMap[n]) {
-        const title = menuMap[n];
-        const data = await robustSendPackage(title, n, loggedInUser);
-        pushBot(data);
-        return;
-      }
     }
 
     const nluRes = await nlu(original);
@@ -749,8 +749,23 @@ export default function Page() {
     if (!/^ยืนยัน$|^ยกเลิก$/i.test(value)) setConfirmMode(false);
     setShowPaidButton(false);
 
-    if (value.trim() === 'ยืนยัน') { await processConfirm(); return; }
-    if (value.trim() === 'ยกเลิก') { const data = await callAPI('ยกเลิก', loggedInUser); pushBot(data); return; }
+    // ⬇️ รีเซ็ตทุกอย่างเมื่อกด "ยกเลิก"
+    if (value.trim() === 'ยกเลิก') {
+      setAwaitingUID(false);
+      setPendingNumberRange(null);
+      setMenuMap({});
+      setConfirmMode(false);
+      setShowPaidButton(false);
+
+      const data = await callAPI('ยกเลิก', loggedInUser);
+      pushBot(data);
+      return;
+    }
+
+    if (value.trim() === 'ยืนยัน') {
+      await processConfirm();
+      return;
+    }
 
     const data = await callAPI(value, loggedInUser);
     pushBot(data);
