@@ -47,7 +47,7 @@ type Session = {
     characters?: { id: number; name: string; level: number }[];
     details?: Record<string, any>;
     selectedId?: number;
-    chipMap?: Record<string, string>; // << เพิ่ม: map label -> ชื่อ/ID
+    chipMap?: Record<string, string>; // << เพิ่ม: map label -> ID
   };
 
   lastAdviceError?: string | null;
@@ -530,9 +530,12 @@ ${nameLine}UID: ${uid}
         .slice(0, 12)
         .map((c) => {
           const fromDetail = s.enka?.details?.[String(c.id)];
-          const showName: string = (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
-          const label = `${showName} (lv.${c.level})`; // 💡 ใช้ชื่อ+เวล ในปุ่ม
-          s.enka!.chipMap![label] = String(c.id); // ⭐️ แก้ไข: เก็บ label -> ID ตัวละคร
+          // 💡 ปรับปรุง: ใช้ชื่อจาก detail/c.name/ID เป็นชื่อสำรอง
+          const rawName: string = (fromDetail && fromDetail.name) || c.name || `ID ${c.id}`;
+          const showName = rawName.replace(/[\(\)]/g, '').trim(); 
+          
+          const label = `${showName} (lv.${c.level})`; // 💡 ใช้ชื่อตัวละคร (lv.XX) 
+          s.enka!.chipMap![label] = String(c.id); // ⭐️ เก็บ label -> ID ตัวละคร
           return label;
         });
 
@@ -561,22 +564,29 @@ ${nameLine}UID: ${uid}
     const details = s.enka?.details || {};
     const game = (s.enka?.game || "gi") as GameKey;
 
-    // แปลงข้อความที่รับมาให้เป็น "ชื่อ" ถ้าเป็นป้ายปุ่ม
+    // แปลงข้อความที่รับมาให้เป็น "ชื่อปุ่ม"
     const rawUser = text.trim();
-    // ⭐️ แก้ไข: mappedCharId จะเป็น ID ของตัวละครถ้าผู้ใช้กดปุ่ม
-    const mappedCharId = s.enka?.chipMap?.[rawUser];
-    const userText = mappedCharId || rawUser; // ถ้าได้ ID จากปุ่ม จะใช้ ID นั้นแทน
-
-    // 💡 ใช้ mappedCharId เพื่อให้การกดปุ่มแปลงเป็น ID ทันที
-    const pickId = Number(mappedCharId || userText.match(/\b#?(\d{3,9})\b/)?.[1]);
-    const idMatch = pickId > 0 ? [String(pickId), String(pickId)] : null;
     
+    // ⭐️ แก้ไข: ดึง ID จาก chipMap ถ้าผู้ใช้กดปุ่มที่มี label ตรงกัน
+    const mappedCharId = s.enka?.chipMap?.[rawUser]; 
+    
+    // ID ที่จะใช้ในการค้นหา
+    let pickId: number;
+    
+    if (mappedCharId) {
+      pickId = Number(mappedCharId); // 💡 ใช้ ID ที่ดึงจากปุ่ม (แน่นอนกว่า)
+    } else {
+      // พยายามหา ID จากข้อความที่ผู้ใช้พิมพ์ (fallback)
+      const idMatch = rawUser.match(/\b#?(\d{3,9})\b/);
+      pickId = Number(idMatch?.[1]) || 0;
+    }
+
     let target: { id: number; name: string; level: number } | null = null;
 
-    if (idMatch) {
-      const pickId = Number(idMatch[1]);
+    if (pickId > 0) {
       target = chars.find((c) => c.id === pickId) || null;
     }
+    
     // 💡 หากไม่พบจากการกดปุ่ม/พิมพ์ ID ให้ลองหาจากชื่อตัวละครที่ผู้ใช้อาจพิมพ์เอง
     if (!target) {
       target =
@@ -592,11 +602,13 @@ ${nameLine}UID: ${uid}
 
     if (!target) {
       const chips = chars.slice(0, 12).map((c) => {
-        const nm = details[String(c.id)]?.name || c.name;
-        const label = `${nm} (lv.${c.level})`; // 💡 ใช้ชื่อ+เวล ในปุ่ม
+        const rawName: string = (details[String(c.id)]?.name) || c.name || `ID ${c.id}`;
+        const showName = rawName.replace(/[\(\)]/g, '').trim();
+
+        const label = `${showName} (lv.${c.level})`; // 💡 ใช้ชื่อ+เวล ในปุ่ม
         // เผื่อผู้ใช้ย้อนกลับมาใหม่ ให้มี map พร้อมใช้
         if (!s.enka?.chipMap) s.enka = { ...(s.enka || {}), chipMap: Object.create(null) };
-        s.enka!.chipMap![label] = String(c.id); // ⭐️ แก้ไข: เก็บ label -> ID ตัวละคร
+        s.enka!.chipMap![label] = String(c.id); // ⭐️ เก็บ label -> ID ตัวละคร
         return label;
       });
       return NextResponse.json({
