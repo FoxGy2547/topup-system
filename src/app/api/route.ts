@@ -2,14 +2,38 @@
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
 
-/* ===================== DB Pool ===================== */
-const db = mysql.createPool({
-  host: process.env.DB_HOST || "sql12.freesqldatabase.com",
-  user: process.env.DB_USER || "sql12796984",
-  password: process.env.DB_PASS || "n72gyyb4KT",
-  database: process.env.DB_NAME || "sql12796984",
-  connectionLimit: 10,
-});
+function required(name: string, val: string | undefined) {
+  if (!val || !val.trim()) throw new Error(`Missing env: ${name}`);
+  return val;
+}
+
+const {
+  DB_URL,
+  DB_HOST,
+  DB_PORT,
+  DB_USER,
+  DB_PASS,
+  DB_NAME,
+} = process.env;
+
+const db = (() => {
+  if (DB_URL && DB_URL.trim()) {
+    // ใช้ connection string ตรง ๆ
+    return mysql.createPool(DB_URL);
+  }
+
+  // ใช้แบบแยกตัวแปร
+  return mysql.createPool({
+    host: required("DB_HOST", DB_HOST),
+    port: DB_PORT ? Number(DB_PORT) : 3306,
+    user: required("DB_USER", DB_USER),
+    password: required("DB_PASS", DB_PASS),
+    database: required("DB_NAME", DB_NAME),
+    connectionLimit: 10,
+    // ถ้าต้องใช้ SSL (เช่น PlanetScale/บางผู้ให้บริการ) ให้เปิดคอมเมนต์นี้
+    // ssl: { rejectUnauthorized: true },
+  });
+})();
 
 /* ===================== Types ===================== */
 type GameKey = "gi" | "hsr";
@@ -65,6 +89,31 @@ function clientKey(req: Request, username?: string, sessionId?: string) {
     "0.0.0.0";
   const ua = (req.headers.get("user-agent") || "").slice(0, 80);
   return `ipua:${ip}:${ua}`;
+}
+
+/* ---------- Chip helpers ---------- */
+function parseChipLabel(s: string) {
+  // รับ "Saber (lv.80)" หรือ "#1310 (lv.80)" หรือแม้แต่ "Saber"
+  const m = s.match(/^\s*(.*?)\s*\(lv\.\s*\d+\)\s*$/i);
+  const raw = (m ? m[1] : s).trim();
+  const idm = raw.match(/^#?(\d{3,9})$/);
+  return {
+    label: raw,
+    id: idm ? Number(idm[1]) : null,
+    name: idm ? null : raw,
+  };
+}
+function resolveCharName(
+  game: GameKey,
+  id: number,
+  details?: Record<string, any>,
+  fallbackLabel?: string,
+  fallbackName?: string
+) {
+  const fromDetails = details?.[String(id)]?.name as string | undefined;
+  const first = (fromDetails || fallbackLabel || fallbackName || "").trim();
+  if (first && !/^#?\d+$/.test(first)) return first; // ได้ชื่อจริงแล้ว
+  return `#${id}`; // สุดท้ายจริง ๆ ค่อยเป็น #id
 }
 
 /* ===================== Utils ===================== */
@@ -520,7 +569,7 @@ ${nameLine}UID: ${uid}
         .map((c) => {
           const fromDetail = s.enka?.details?.[String(c.id)];
           const showName: string = (fromDetail && fromDetail.name) || c.name || `#${c.id}`;
-          return `${showName} (lv.${c.level})`;
+          return `${showName}`;
         });
 
       return NextResponse.json({
@@ -570,7 +619,7 @@ ${nameLine}UID: ${uid}
     if (!target) {
       const chips = chars.slice(0, 12).map((c) => {
         const nm = details[String(c.id)]?.name || c.name || `#${c.id}`;
-        return `${nm} (lv.${c.level})`;
+        return `${nm}`;
       });
       return NextResponse.json({
         reply: "ไม่พบตัวละครนี้ในลิสต์ค่ะ ลองพิมพ์ให้ตรงหรือเลือกจากปุ่มด้านล่าง",
