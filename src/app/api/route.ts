@@ -1,3 +1,4 @@
+// src/app/api/route.ts
 import { NextResponse } from "next/server";
 import mysql, { RowDataPacket } from "mysql2/promise";
 
@@ -32,6 +33,7 @@ type Session = {
   selectedName?: string;
   selectedPrice?: number;
   uid?: string;
+  uidName?: string; // << เพิ่ม: เก็บชื่อ (nickname) ที่ดึงจาก Enka
   productList?: Array<{ name: string; price: number }>;
 
   // enka
@@ -293,6 +295,7 @@ function sessionsReset(s: Session) {
   s.selectedName = undefined;
   s.selectedPrice = undefined;
   s.uid = undefined;
+  s.uidName = undefined; // << ล้างชื่อด้วย
   s.productList = undefined;
   s.enka = undefined;
   s.lastAdviceError = null;
@@ -412,6 +415,7 @@ ${renderProductList(list)}
       return NextResponse.json({ reply: "กรุณาพิม์ UID เป็นตัวเลขเท่านั้นค่ะ", ...onlyCancel() });
     }
     s.uid = uidOnly;
+    s.uidName = undefined; // เคลียร์ก่อน
 
     const game: GameKey = s.state === "waiting_uid_gi" ? "gi" : "hsr";
     const gameName = game === "gi" ? "Genshin Impact" : "Honkai: Star Rail";
@@ -419,12 +423,26 @@ ${renderProductList(list)}
     const price = s.selectedPrice ?? 0;
     const amount = parseAmountToReceive(game, pkg);
 
+    // << ดึงชื่อจาก Enka (ถ้าดึงไม่ได้จะเงียบ ๆ แล้วไปต่อ)
+    try {
+      const base = new URL(req.url).origin;
+      const enkaUrl = game === "hsr" ? `${base}/api/enka-hsr` : `${base}/api/enka-gi`;
+      const r = await fetch(enkaUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: uidOnly }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (j?.ok && j?.player) s.uidName = String(j.player);
+    } catch {}
+
     s.state = "confirm_order";
 
+    const nameLine = s.uidName ? `ชื่อ: ${s.uidName}\n` : "";
     const reply = `สรุปรายการสั่งซื้อ (รอยืนยัน)
 เกม: ${gameName}
 UID: ${uidOnly}
-แพ็กเกจ: ${pkg}
+${nameLine}แพ็กเกจ: ${pkg}
 จำนวนที่จะได้รับ: ${amount}
 ราคา: ${price.toFixed(2)} บาท
 
@@ -438,13 +456,14 @@ UID: ${uidOnly}
       const uid = s.uid || "-";
       const pkg = s.selectedName || "-";
       const price = s.selectedPrice ?? 0;
+      const nameLine = s.uidName ? `ชื่อ: ${s.uidName}\n` : "";
 
       sessionsReset(s);
 
       const reply = `รับคำยืนยันแล้วค่ะ ✅
 ยอดชำระ: ${price.toFixed(2)} บาท
 แพ็กเกจ: ${pkg}
-UID: ${uid}
+${nameLine}UID: ${uid}
 
 กรุณาสแกน QR เพื่อชำระเงินได้เลยค่ะ`;
       return NextResponse.json({ reply, quickReplies: [], paymentRequest: { showQR: true } });
