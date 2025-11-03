@@ -22,7 +22,6 @@ const cdn = {
   langBase: `https://tessdata.projectnaptha.com/4.0.0_best`, // มี thai/eng เป็น .traineddata.gz
 };
 
-// เช็คว่า URL ใช้งานได้ไหม (HEAD -> 200/OK)
 async function ok(url: string) {
   try {
     const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
@@ -32,11 +31,9 @@ async function ok(url: string) {
   }
 }
 
-// เลือก worker/core/lang ที่ใช้ได้จริง
 async function resolvePaths() {
-  // worker
   const workerPath = (await ok(local.worker)) ? local.worker : cdn.worker;
-  // core (ลอง SIMD ก่อน)
+
   const corePath = (await ok(local.coreSimd))
     ? local.coreSimd
     : (await ok(local.coreNoSimd))
@@ -45,11 +42,12 @@ async function resolvePaths() {
     ? cdn.coreSimd
     : cdn.coreNoSimd;
 
-  // lang base (โฟลเดอร์)
-  const langBase = (await ok(`${local.langBase}/eng.traineddata`))
-    ? local.langBase
-    : cdn.langBase;
+  // ✅ ลองทั้ง .traineddata และ .traineddata.gz
+  const localOk =
+    (await ok(`${local.langBase}/eng.traineddata`)) ||
+    (await ok(`${local.langBase}/eng.traineddata.gz`));
 
+  const langBase = localOk ? local.langBase : cdn.langBase;
   return { workerPath, corePath, langPath: langBase };
 }
 
@@ -82,3 +80,4 @@ export async function ocrWithFallback(
 
   return Promise.race([run, timeout]);
 }
+
