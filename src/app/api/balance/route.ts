@@ -1,26 +1,48 @@
-// /src/app/api/balance/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { getPool } from '@/lib/db';
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
+
+// 🔹 ตั้งค่า Supabase Client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  { auth: { autoRefreshToken: false, persistSession: false } }
+);
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const username = searchParams.get('username')?.trim();
+    const username = searchParams.get("username")?.trim();
+
     if (!username) {
-      return NextResponse.json({ ok: false, message: 'username required' }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, message: "username required" },
+        { status: 400 }
+      );
     }
 
-    const pool = getPool();
-    const [rows] = await pool.query('SELECT balance FROM users WHERE username = ? LIMIT 1', [username]);
+    // 🔸 อ่าน balance จากตาราง users
+    const { data, error } = await supabase
+      .from("users")
+      .select("balance")
+      .eq("username", username)
+      .single<{ balance: number | null }>();
 
-    // ✅ อ่านแถวแรกให้ถูกต้อง แล้วแปลงเป็น number
-    const row = Array.isArray(rows) ? (rows as any[])[0] : null;
-    const balance = row && row.balance != null ? Number(row.balance) : 0;
+    if (error || !data) {
+      return NextResponse.json(
+        { ok: false, message: "user not found" },
+        { status: 404 }
+      );
+    }
 
+    const balance = Number(data.balance ?? 0);
     return NextResponse.json({ ok: true, balance });
   } catch (e) {
-    return NextResponse.json({ ok: false, message: 'db error' }, { status: 500 });
+    console.error("balance error:", e);
+    return NextResponse.json(
+      { ok: false, message: "db error" },
+      { status: 500 }
+    );
   }
 }

@@ -1,6 +1,5 @@
-// /src/app/api/payment/verify/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import mysql, { RowDataPacket } from "mysql2/promise";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
@@ -11,38 +10,42 @@ type Body = {
   ref?: string;
 };
 
-interface UserRow extends RowDataPacket {
-  balance: number;
-}
+type UserRow = { balance: number | null };
 
-// --- DB pool (แก้ ENV ตามเครื่องได้) ---
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || "sql12.freesqldatabase.com",
-  user: process.env.DB_USER || "sql12796984",
-  password: process.env.DB_PASS || "n72gyyb4KT",
-  database: process.env.DB_NAME || "sql12796984",
-  charset: "utf8mb4_general_ci",
-  waitForConnections: true,
-  connectionLimit: 10,
-});
+/* ---------------- Supabase Client ---------------- */
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, // ใช้ anon key (ต้องมี RLS policy ให้สิทธิอ่าน/อัปเดต)
+  { auth: { autoRefreshToken: false, persistSession: false } }
+);
 
+/* ---------------- Helpers ---------------- */
 async function getBalance(username: string): Promise<number> {
-  const [rows] = await pool.query<UserRow[]>(
-    "SELECT balance FROM users WHERE username=?",
-    [username]
-  );
-  const r = rows[0] ?? undefined;
-  return Number(r?.balance ?? 0);
+  const { data, error } = await supabase
+    .from("users")
+    .select("balance")
+    .eq("username", username)
+    .single<UserRow>();
+
+  if (error || !data) return 0;
+  return Number(data.balance ?? 0);
 }
 
 async function addBalance(username: string, delta: number): Promise<number> {
-  await pool.query(
-    "UPDATE users SET balance = IFNULL(balance,0) + ? WHERE username=?",
-    [delta, username]
-  );
-  return getBalance(username);
+  // สเต็ปง่าย ๆ: อ่าน -> คำนวณ -> อัปเดต (ต้องมี RLS UPDATE)
+  const current = await getBalance(username);
+  const next = Math.round((current + delta) * 100) / 100;
+
+  const { error } = await supabase
+    .from("users")
+    .update({ balance: next })
+    .eq("username", username);
+
+  if (error) throw error;
+  return next;
 }
 
+/* ---------------- Route ---------------- */
 export async function POST(req: NextRequest) {
   try {
     const ct = req.headers.get("content-type") || "";
@@ -56,41 +59,29 @@ export async function POST(req: NextRequest) {
     const username = (body.username || "").trim();
 
     if (!isFinite(expected) || !isFinite(actual)) {
-      return NextResponse.json(
-        { status: "fail", reason: "bad_number" },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: "fail", reason: "bad_number" }, { status: 400 });
     }
 
-    // ตรงเป๊ะ
+    // จ่ายตรงเป๊ะ
     if (Math.abs(actual - expected) < 0.01) {
-      let newBalance: number | undefined;
-      if (username) newBalance = await getBalance(username);
+      const newBalance = username ? await getBalance(username) : undefined;
       return NextResponse.json({ status: "ok", actual, newBalance });
     }
 
     // จ่ายไม่พอ
     if (actual < expected) {
       const diff = Number((expected - actual).toFixed(2));
-      let newBalance: number | undefined;
-      if (username) newBalance = await getBalance(username);
-      return NextResponse.json({
-        status: "under",
-        diff,
-        actual,
-        newBalance,
-      });
+      const newBalance = username ? await getBalance(username) : undefined;
+      return NextResponse.json({ status: "under", diff, actual, newBalance });
     }
 
     // โอนเกิน → เก็บส่วนต่างเข้ากระเป๋า
     const over = Number((actual - expected).toFixed(2));
-    let newBalance: number | undefined;
-    if (username) {
-      newBalance = await addBalance(username, over);
-    }
+    const newBalance = username ? await addBalance(username, over) : undefined;
+
     return NextResponse.json({ status: "over", diff: over, actual, newBalance });
-  } catch (_e: unknown) {
-    console.error("verify error:", _e);
+  } catch (e) {
+    console.error("verify error:", e);
     return NextResponse.json({ status: "fail" }, { status: 500 });
   }
 }
